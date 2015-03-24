@@ -20,6 +20,8 @@ env:
     - CONFIG=gcov TEST=c
     - CONFIG=gcov TEST=c++
 script:
+  - cat /etc/issue
+  - md5sum /etc/issue
   - rvm use $RUBY_VERSION
   - gem install bundler
   - ./tools/run_tests/run_tests.py -l $TEST -t -j 16 -c $CONFIG -s 4.0
