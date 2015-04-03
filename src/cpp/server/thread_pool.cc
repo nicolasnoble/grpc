@@ -38,16 +38,16 @@ namespace grpc {
 void ThreadPool::ThreadFunc() {
   for (;;) {
     // Wait until work is available or we are shutting down.
-    std::unique_lock<std::mutex> lock(mu_);
+    lock guard(&mu_);
     if (!shutdown_ && callbacks_.empty()) {
-      cv_.wait(lock);
+      cv_.wait(&guard);
     }
     // Drain callbacks before considering shutdown to ensure all work
     // gets completed.
     if (!callbacks_.empty()) {
       auto cb = callbacks_.front();
       callbacks_.pop();
-      lock.unlock();
+      guard.release();
       cb();
     } else if (shutdown_) {
       return;
@@ -57,15 +57,15 @@ void ThreadPool::ThreadFunc() {
 
 ThreadPool::ThreadPool(int num_threads) : shutdown_(false) {
   for (int i = 0; i < num_threads; i++) {
-    threads_.push_back(std::thread(&ThreadPool::ThreadFunc, this));
+    threads_.push_back(thread(&ThreadPool::ThreadFunc, this));
   }
 }
 
 ThreadPool::~ThreadPool() {
   {
-    std::lock_guard<std::mutex> lock(mu_);
+    lock guard(&mu_);
     shutdown_ = true;
-    cv_.notify_all();
+    cv_.broadcast();
   }
   for (auto t = threads_.begin(); t != threads_.end(); t++) {
     t->join();
@@ -73,9 +73,9 @@ ThreadPool::~ThreadPool() {
 }
 
 void ThreadPool::ScheduleCallback(const std::function<void()>& callback) {
-  std::lock_guard<std::mutex> lock(mu_);
+  lock guard(&mu_);
   callbacks_.push(callback);
-  cv_.notify_one();
+  cv_.signal();
 }
 
 }  // namespace grpc
