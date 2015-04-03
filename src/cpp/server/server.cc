@@ -120,8 +120,8 @@ class Server::SyncRequest GRPC_FINAL : public CompletionQueueTag {
     }
 
     void Run() {
-      std::unique_ptr<grpc::protobuf::Message> req;
-      std::unique_ptr<grpc::protobuf::Message> res;
+      std::unique_ptr<protobuf::Message> req;
+      std::unique_ptr<protobuf::Message> res;
       if (has_request_payload_) {
         req.reset(method_->AllocateRequestProto());
         if (!DeserializeProto(request_payload_, req.get())) {
@@ -183,9 +183,9 @@ Server::Server(ThreadPoolInterface* thread_pool, bool thread_pool_owned)
 
 Server::~Server() {
   {
-    std::unique_lock<std::mutex> lock(mu_);
+    lock guard(&mu_);
     if (started_ && !shutdown_) {
-      lock.unlock();
+      guard.release();
       Shutdown();
     }
   }
@@ -235,7 +235,7 @@ void Server::RegisterAsyncGenericService(AsyncGenericService* service) {
   service->server_ = this;
 }
 
-int Server::AddListeningPort(const grpc::string& addr,
+int Server::AddListeningPort(const string& addr,
                              ServerCredentials* creds) {
   GPR_ASSERT(!started_);
   return creds->AddPortToServer(addr, server_);
@@ -259,7 +259,7 @@ bool Server::Start() {
 }
 
 void Server::Shutdown() {
-  std::unique_lock<std::mutex> lock(mu_);
+  lock guard(&mu_);
   if (started_ && !shutdown_) {
     shutdown_ = true;
     grpc_server_shutdown(server_);
@@ -267,15 +267,15 @@ void Server::Shutdown() {
 
     // Wait for running callbacks to finish.
     while (num_running_cb_ != 0) {
-      callback_cv_.wait(lock);
+      callback_cv_.wait(&guard);
     }
   }
 }
 
 void Server::Wait() {
-  std::unique_lock<std::mutex> lock(mu_);
+  lock guard(&mu_);
   while (num_running_cb_ != 0) {
-    callback_cv_.wait(lock);
+    callback_cv_.wait(&guard);
   }
 }
 
@@ -405,7 +405,7 @@ void Server::RequestAsyncGenericCall(GenericServerContext* context,
 
 void Server::ScheduleCallback() {
   {
-    std::unique_lock<std::mutex> lock(mu_);
+    lock guard(&mu_);
     num_running_cb_++;
   }
   thread_pool_->ScheduleCallback(std::bind(&Server::RunRpc, this));
@@ -426,10 +426,10 @@ void Server::RunRpc() {
   }
 
   {
-    std::unique_lock<std::mutex> lock(mu_);
+    lock guard(&mu_);
     num_running_cb_--;
     if (shutdown_) {
-      callback_cv_.notify_all();
+      callback_cv_.broadcast();
     }
   }
 }

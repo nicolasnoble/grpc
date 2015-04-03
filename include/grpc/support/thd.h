@@ -63,6 +63,8 @@ typedef struct {
 int gpr_thd_new(gpr_thd_id *t, void (*thd_body)(void *arg), void *arg,
                 const gpr_thd_options *options);
 
+void *gpr_thd_join(gpr_thd_id t);
+
 /* Return a gpr_thd_options struct with all fields set to defaults. */
 gpr_thd_options gpr_thd_options_default(void);
 

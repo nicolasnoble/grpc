@@ -34,6 +34,7 @@
 #include <grpc++/server_context.h>
 
 #include <grpc++/impl/call.h>
+#include <grpc++/impl/sync.h>
 #include <grpc/grpc.h>
 #include <grpc/support/log.h>
 #include "src/cpp/util/time.h"
@@ -55,33 +56,33 @@ class ServerContext::CompletionOp GRPC_FINAL : public CallOpBuffer {
   void Unref();
 
  private:
-  std::mutex mu_;
+  mutex mu_;
   int refs_;
   bool finalized_;
   bool cancelled_;
 };
 
 void ServerContext::CompletionOp::Unref() {
-  std::unique_lock<std::mutex> lock(mu_);
+  lock guard(&mu_);
   if (--refs_ == 0) {
-    lock.unlock();
+    guard.release();
     delete this;
   }
 }
 
 bool ServerContext::CompletionOp::CheckCancelled(CompletionQueue* cq) {
   cq->TryPluck(this);
-  std::lock_guard<std::mutex> g(mu_);
+  lock guard(&mu_);
   return finalized_ ? cancelled_ : false;
 }
 
 bool ServerContext::CompletionOp::FinalizeResult(void** tag, bool* status) {
   GPR_ASSERT(CallOpBuffer::FinalizeResult(tag, status));
-  std::unique_lock<std::mutex> lock(mu_);
+  lock guard(&mu_);
   finalized_ = true;
   if (!*status) cancelled_ = true;
   if (--refs_ == 0) {
-    lock.unlock();
+    guard.release();
     delete this;
   }
   return false;

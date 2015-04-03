@@ -35,6 +35,8 @@
 #define GRPC_INTERNAL_CPP_SERVER_THREAD_POOL_H
 
 #include <grpc++/config.h>
+
+#include <grpc++/impl/sync.h>
 #include <grpc++/thread_pool_interface.h>
 
 #include <queue>
@@ -50,11 +52,11 @@ class ThreadPool GRPC_FINAL : public ThreadPoolInterface {
   void ScheduleCallback(const std::function<void()>& callback) GRPC_OVERRIDE;
 
  private:
-  std::mutex mu_;
-  std::condition_variable cv_;
+  grpc::mutex mu_;
+  grpc::condition_variable cv_;
   bool shutdown_;
   std::queue<std::function<void()>> callbacks_;
-  std::vector<std::thread> threads_;
+  std::vector<grpc::thread> threads_;
 
   void ThreadFunc();
 };
