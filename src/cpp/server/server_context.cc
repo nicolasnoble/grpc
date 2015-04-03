@@ -56,33 +56,33 @@ class ServerContext::CompletionOp GRPC_FINAL : public CallOpBuffer {
   void Unref();
 
  private:
-  mutex mu_;
+  grpc::mutex mu_;
   int refs_;
   bool finalized_;
   bool cancelled_;
 };
 
 void ServerContext::CompletionOp::Unref() {
-  lock guard(&mu_);
+  grpc::unique_lock<grpc::mutex> lock(mu_);
   if (--refs_ == 0) {
-    guard.release();
+    lock.unlock();
     delete this;
   }
 }
 
 bool ServerContext::CompletionOp::CheckCancelled(CompletionQueue* cq) {
   cq->TryPluck(this);
-  lock guard(&mu_);
+  grpc::lock_guard<grpc::mutex> g(mu_);
   return finalized_ ? cancelled_ : false;
 }
 
 bool ServerContext::CompletionOp::FinalizeResult(void** tag, bool* status) {
   GPR_ASSERT(CallOpBuffer::FinalizeResult(tag, status));
-  lock guard(&mu_);
+  grpc::unique_lock<grpc::mutex> lock(mu_);
   finalized_ = true;
   if (!*status) cancelled_ = true;
   if (--refs_ == 0) {
-    guard.release();
+    lock.unlock();
     delete this;
   }
   return false;

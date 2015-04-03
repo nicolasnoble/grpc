@@ -109,12 +109,12 @@ class Server GRPC_FINAL : private CallHook,
   CompletionQueue cq_;
 
   // Sever status
-  mutex mu_;
+  grpc::mutex mu_;
   bool started_;
   bool shutdown_;
   // The number of threads which are running callbacks.
   int num_running_cb_;
-  condition_variable callback_cv_;
+  grpc::condition_variable callback_cv_;
 
   std::list<SyncRequest> sync_methods_;
 

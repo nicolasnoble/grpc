@@ -31,6 +31,9 @@
  *
  */
 
+#include <grpc++/impl/sync.h>
+#include <grpc++/impl/thd.h>
+
 #include "src/cpp/server/thread_pool.h"
 
 namespace grpc {
@@ -38,16 +41,16 @@ namespace grpc {
 void ThreadPool::ThreadFunc() {
   for (;;) {
     // Wait until work is available or we are shutting down.
-    lock guard(&mu_);
+    grpc::unique_lock<grpc::mutex> lock(mu_);
     if (!shutdown_ && callbacks_.empty()) {
-      cv_.wait(&guard);
+      cv_.wait(lock);
     }
     // Drain callbacks before considering shutdown to ensure all work
     // gets completed.
     if (!callbacks_.empty()) {
       auto cb = callbacks_.front();
       callbacks_.pop();
-      guard.release();
+      lock.unlock();
       cb();
     } else if (shutdown_) {
       return;
@@ -57,15 +60,15 @@ void ThreadPool::ThreadFunc() {
 
 ThreadPool::ThreadPool(int num_threads) : shutdown_(false) {
   for (int i = 0; i < num_threads; i++) {
-    threads_.push_back(thread(&ThreadPool::ThreadFunc, this));
+    threads_.push_back(grpc::thread(&ThreadPool::ThreadFunc, this));
   }
 }
 
 ThreadPool::~ThreadPool() {
   {
-    lock guard(&mu_);
+    grpc::lock_guard<grpc::mutex> lock(mu_);
     shutdown_ = true;
-    cv_.broadcast();
+    cv_.notify_all();
   }
   for (auto t = threads_.begin(); t != threads_.end(); t++) {
     t->join();
@@ -73,9 +76,9 @@ ThreadPool::~ThreadPool() {
 }
 
 void ThreadPool::ScheduleCallback(const std::function<void()>& callback) {
-  lock guard(&mu_);
+  grpc::lock_guard<grpc::mutex> lock(mu_);
   callbacks_.push(callback);
-  cv_.signal();
+  cv_.notify_one();
 }
 
 }  // namespace grpc

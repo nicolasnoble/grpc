@@ -34,93 +34,13 @@
 #ifndef GRPCXX_IMPL_SYNC_H
 #define GRPCXX_IMPL_SYNC_H
 
-#include <grpc/support/sync.h>
-#include <grpc/support/thd.h>
+#include <grpc++/config.h>
 
-namespace grpc {
+#ifdef GRPC_CXX0X_NO_THREAD
+#include <grpc++/impl/sync_nocxx11.h>
+#else
+#include <grpc++/impl/sync_cxx11.h>
 
-class lock;
-class condition_variable;
-
-class mutex {
- public:
-  mutex() { gpr_mu_init(&mu_); }
-  ~mutex() { gpr_mu_destroy(&mu_); }
- private:
-  ::gpr_mu mu_;
-  friend class lock;
-  friend class condition_variable;
-};
-
-class lock {
- public:
-  lock(mutex *mu) : mu_(mu), locked(true) { gpr_mu_lock(&mu->mu_); }
-  ~lock() { release(); }
-  void acquire() {
-    if (!locked) gpr_mu_lock(&mu_->mu_);
-    locked = true;
-  }
-  void release() {
-    if (locked) gpr_mu_unlock(&mu_->mu_);
-    locked = false;
-  }
- private:
-  mutex *mu_;
-  bool locked;
-  friend class condition_variable;
-};
-
-class condition_variable {
- public:
-  condition_variable() { gpr_cv_init(&cv_); }
-  ~condition_variable() { gpr_cv_destroy(&cv_); }
-  void wait(lock *mu) {
-    mu->locked = false;
-    gpr_cv_wait(&cv_, &mu->mu_->mu_, gpr_inf_future);
-    mu->locked = true;
-  }
-  void signal() { gpr_cv_signal(&cv_); }
-  void broadcast() { gpr_cv_broadcast(&cv_); }
- private:
-  gpr_cv cv_;
-};
-
-class thread {
- public:
-  template<class T> thread(void (T::*fptr)(), T *obj) {
-    func_ = new thread_function<T>(fptr, obj);
-    start();
-  }
-  ~thread() { delete func_; }
-  void join() { gpr_thd_join(thd); }
- private:
-  void start() {
-    gpr_thd_new(&thd, thread_func, (void *) func_, NULL);
-  }
-  static void thread_func(void *arg) {
-    thread_function_base *func = (thread_function_base *) arg;
-    func->call();
-  }
-  class thread_function_base {
-   public:
-    virtual ~thread_function_base() { }
-    virtual void call() = 0;
-  };
-  template<class T>
-  class thread_function : public thread_function_base {
-   public:
-    thread_function(void (T::*fptr)(), T *obj)
-      : fptr_(fptr)
-      , obj_(obj) { }
-    virtual void call() { (obj_->*fptr_)(); }
-   private:
-    void (T::*fptr_)();
-    T *obj_;
-  };
-  thread_function_base *func_;
-  gpr_thd_id thd;
-};
-
-}  // namespace grpc
+#endif
 
 #endif  // GRPCXX_IMPL_SYNC_H
