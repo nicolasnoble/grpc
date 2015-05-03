@@ -41,9 +41,9 @@
 #include "src/core/iomgr/iocp_windows.h"
 #include "src/core/iomgr/iomgr.h"
 #include "src/core/iomgr/iomgr_internal.h"
-#include "src/core/iomgr/socket_windows.h"
 #include "src/core/iomgr/pollset.h"
 #include "src/core/iomgr/pollset_windows.h"
+#include "src/core/iomgr/socket_windows.h"
 
 grpc_winsocket *grpc_winsocket_create(SOCKET socket) {
   grpc_winsocket *r = gpr_malloc(sizeof(grpc_winsocket));
@@ -55,16 +55,33 @@ grpc_winsocket *grpc_winsocket_create(SOCKET socket) {
   return r;
 }
 
-static void shutdown_op(grpc_winsocket_callback_info *info) {
+/* Call the pending operation callbacks to abort them. Holding the socket's
+   mutex state should be fine, as we shouldn't be trying to lock it again
+   in that abortion case, as it'd mean otherwise we're queuing another
+   operation, which is senseless. */
+static void shutdown_op(grpc_winsocket_callback_info *info, gpr_mu &mu) {
   if (!info->cb) return;
-  grpc_iomgr_add_delayed_callback(info->cb, info->opaque, 0);
+  info->cb(info->opaque, 0);
 }
 
-void grpc_winsocket_shutdown(grpc_winsocket *socket) {
+static void async_socket_shutdown(void *info, int success) {
+  grpc_winsocket *socket = (grpc_winsocket *) info;
+  gpr_mu_lock(&socket->state_mu);
   shutdown_op(&socket->read_info);
   shutdown_op(&socket->write_info);
+  gpr_mu_unlock(&socket->state_mu);
 }
 
+/* Schedule a shutdown of the socket operations. Will call the pending
+   operations to abort them. We need to do that this way because of the
+   various callsites of that function, which happens to be in various
+   mutex hold states. */
+void grpc_winsocket_shutdown(grpc_winsocket *socket) {
+  grpc_iomgr_add_delayed_callback(async_socket_shutdown, socket, 0);
+}
+
+/* Abandons a socket. Either we're going to queue it up for garbage collecting
+   from the IO Completion Port thread, or destroy it immediately. */
 void grpc_winsocket_orphan(grpc_winsocket *winsocket) {
   SOCKET socket = winsocket->socket;
   if (!winsocket->closed_early) {
