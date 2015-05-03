@@ -75,9 +75,9 @@ static void async_socket_shutdown(void *info, int dummy) {
   opaque_read = socket->read_info.opaque;
   write_cb = socket->write_info.cb;
   opaque_write = socket->write_info.opaque;
+  gpr_mu_unlock(&socket->state_mu);
   shutdown_op(read_cb, opaque_read);
   shutdown_op(write_cb, opaque_write);
-  gpr_mu_unlock(&socket->state_mu);
 }
 
 /* Schedule a shutdown of the socket operations. Will call the pending
