@@ -107,7 +107,7 @@ static void tcp_unref(grpc_tcp *tcp) {
   if (gpr_unref(&tcp->refcount)) {
     gpr_slice_buffer_destroy(&tcp->write_slices);
     grpc_winsocket_orphan(tcp->socket);
-    gpr_mu_destroy(&*tcp->mu);
+    gpr_mu_destroy(&tcp->mu);
     gpr_free(tcp);
   }
 }
@@ -126,16 +126,10 @@ static void on_read(void *tcpp, int from_iocp) {
   int do_abort = 0;
 
   gpr_mu_lock(&tcp->mu);
-  if (from_iocp) {
-    if (tcp->shutting_down) {
-      /* If we are here, it means we got raced to shutting down the endpoint.
-         No actual abort callback will happen though, so we're going to do it
-         from here. We also have to remove one extra reference. */
-      do_abort = 1;
-      tcp_unref(tcp);
-    }
-    tcp->outstanding_read = 0;
-  } else {
+  if (!from_iocp || tcp->shutting_down) {
+    /* If we are here with from_iocp set to true, it means we got raced to
+    shutting down the endpoint. No actual abort callback will happen
+    though, so we're going to do it from here. */
     do_abort = 1;
   }
   gpr_mu_unlock(&tcp->mu);
@@ -143,9 +137,11 @@ static void on_read(void *tcpp, int from_iocp) {
   if (do_abort) {
     if (from_iocp) gpr_slice_unref(tcp->read_slice);
     tcp_unref(tcp);
-    cb(opaque, GRPC_ENDPOINT_CB_SHUTDOWN);
+    cb(opaque, NULL, 0, GRPC_ENDPOINT_CB_SHUTDOWN);
     return;
   }
+
+  GPR_ASSERT(tcp->outstanding_read);
 
   if (socket->read_info.wsa_error != 0) {
     char *utf8_message = gpr_format_message(info->wsa_error);
@@ -164,6 +160,8 @@ static void on_read(void *tcpp, int from_iocp) {
       status = GRPC_ENDPOINT_CB_EOF;
     }
   }
+
+  tcp->outstanding_read = 0;
 
   tcp_unref(tcp);
   cb(opaque, slice, nslices, status);
@@ -240,19 +238,15 @@ static void on_write(void *tcpp, int from_iocp) {
   int do_abort = 0;
 
   gpr_mu_lock(&tcp->mu);
-  if (from_iocp) {
-    if (tcp->shutting_down) {
-      /* If we are here, it means we got raced to shutting down the endpoint.
-         No actual abort callback will happen though, so we're going to do it
-         from here. We also have to remove one extra reference. */
-      do_abort = 1;
-      tcp_unref(tcp);
-    }
-    tcp->outstanding_write = 0;
-  } else {
+  if (!from_iocp || tcp->shutting_down) {
+    /* If we are here with from_iocp set to true, it means we got raced to
+        shutting down the endpoint. No actual abort callback will happen
+        though, so we're going to do it from here. */
     do_abort = 1;
   }
   gpr_mu_unlock(&tcp->mu);
+
+  GPR_ASSERT(tcp->outstanding_write);
 
   if (do_abort) {
     if (from_iocp) gpr_slice_buffer_reset_and_unref(&tcp->write_slices);
@@ -270,6 +264,8 @@ static void on_write(void *tcpp, int from_iocp) {
   } else {
     GPR_ASSERT(info->bytes_transfered == tcp->write_slices.length);
   }
+
+  tcp->outstanding_write = 0;
 
   gpr_slice_buffer_reset_and_unref(&tcp->write_slices);
 
@@ -380,14 +376,9 @@ static void win_shutdown(grpc_endpoint *ep) {
   grpc_tcp *tcp = (grpc_tcp *) ep;
   gpr_mu_lock(&tcp->mu);
   /* At that point, what may happen is that we're already inside the IOCP
-     callback. The refcounting then becomes a bit hazy. The shutdown won't
-     be queued, due to the socket's own protection on the callbacks, but
-     we're still adding a reference for it. So we'll need to take that into
-     account in the IOCP callback. */
+     callback. See the comments in on_read and on_write. */
   tcp->shutting_down = 1;
   grpc_winsocket_shutdown(tcp->socket);
-  if (tcp->outstanding_read) tcp_ref(tcp);
-  if (tcp->outstanding_write) tcp_ref(tcp);
   gpr_mu_unlock(&tcp->mu);
 }
 
