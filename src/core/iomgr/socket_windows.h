@@ -59,7 +59,8 @@ typedef struct grpc_winsocket_callback_info {
      altogether by forcing the caller to always register its callback before
      proceeding queue an operation, but it is frequent for an IO Completion
      Port to trigger quickly. This way we avoid a context switch for calling
-     the callback. */
+     the callback. We also simplify the read / write operations to avoid having
+     to hold a mutex for a long amount of time. */
   int has_pending_iocp;
   /* The results of the overlapped operation. */
   DWORD bytes_transfered;

@@ -59,7 +59,7 @@ grpc_winsocket *grpc_winsocket_create(SOCKET socket) {
    mutex state should be fine, as we shouldn't be trying to lock it again
    in that abortion case, as it'd mean otherwise we're queuing another
    operation, which is senseless. */
-static void shutdown_op(grpc_winsocket_callback_info *info, gpr_mu &mu) {
+static void shutdown_op(grpc_winsocket_callback_info *info) {
   if (!info->cb) return;
   info->cb(info->opaque, 0);
 }
