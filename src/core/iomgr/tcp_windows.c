@@ -190,10 +190,12 @@ static void win_notify_on_read(grpc_endpoint *ep,
   buffer.len = GPR_SLICE_LENGTH(tcp->read_slice);
   buffer.buf = (char *)GPR_SLICE_START_PTR(tcp->read_slice);
 
+  /* First let's try a synchronous, non-blocking read. */
   status = WSARecv(tcp->socket->socket, &buffer, 1, &bytes_read, &flags,
                    NULL, NULL);
   info->wsa_error = status == 0 ? 0 : WSAGetLastError();
 
+  /* Did we get data immediately ? Yay. */
   if (info->wsa_error != WSAEWOULDBLOCK) {
     info->bytes_transfered = bytes_read;
     /* This might heavily recurse. */
@@ -201,6 +203,7 @@ static void win_notify_on_read(grpc_endpoint *ep,
     return;
   }
 
+  /* Otherwise, let's retry, by queuing a read. */
   memset(&tcp->socket->read_info.overlapped, 0, sizeof(OVERLAPPED));
   status = WSARecv(tcp->socket->socket, &buffer, 1, &bytes_read, &flags,
                    &info->overlapped, NULL);
@@ -214,13 +217,24 @@ static void win_notify_on_read(grpc_endpoint *ep,
 
   if (error != WSA_IO_PENDING) {
     char *utf8_message = gpr_format_message(WSAGetLastError());
-    __debugbreak();
-    gpr_log(GPR_ERROR, "WSARecv error: %s", utf8_message);
+    gpr_log(GPR_ERROR, "WSARecv error: %s - this means we're going to leak.",
+            utf8_message);
     gpr_free(utf8_message);
-    /* would the IO completion port be called anyway... ? Let's assume not. */
+    /* I'm pretty sure this is a very bad situation there. Hence the log.
+       What will happen now is that the socket will neither wait for read
+       or write, unless the caller retry, which is unlikely, but I am not
+       sure if that's guaranteed. And there might also be a write pending.
+       This means that the future orphanage of that socket will be in limbo,
+       and we're going to leak it. I have no idea what could cause this
+       specific case however, aside from a parameter error from our call.
+       Normal read errors would actually happen during the overlapped
+       operation, which is the supported way to go for that. */
     tcp->outstanding_read = 0;
     tcp_unref(tcp);
     cb(arg, NULL, 0, GRPC_ENDPOINT_CB_ERROR);
+    /* Per the comment above, I'm going to treat that case as a hard failure
+       for now, and leave the option to catch that and debug. */
+    __debugbreak();
     return;
   }
 
@@ -265,9 +279,8 @@ static void on_write(void *tcpp, int from_iocp) {
     GPR_ASSERT(info->bytes_transfered == tcp->write_slices.length);
   }
 
-  tcp->outstanding_write = 0;
-
   gpr_slice_buffer_reset_and_unref(&tcp->write_slices);
+  tcp->outstanding_write = 0;
 
   tcp_unref(tcp);
   cb(opaque, status);
@@ -308,7 +321,7 @@ static grpc_endpoint_write_status win_write(grpc_endpoint *ep,
     buffers[i].buf = (char *)GPR_SLICE_START_PTR(tcp->write_slices.slices[i]);
   }
 
-  /* First, let's try to issue a synchronous write. */
+  /* First, let's try a synchronous, non-blocking write. */
   status = WSASend(socket->socket, buffers, tcp->write_slices.count,
                    &bytes_sent, 0, NULL, NULL);
   info->wsa_error = status == 0 ? 0 : WSAGetLastError();
@@ -345,12 +358,24 @@ static grpc_endpoint_write_status win_write(grpc_endpoint *ep,
   if (status != 0) {
     int error = WSAGetLastError();
     if (error != WSA_IO_PENDING) {
-      /* If we failed queuing the operation, let's bail. */
       char *utf8_message = gpr_format_message(WSAGetLastError());
-      gpr_log(GPR_ERROR, "WSASend error: %s", utf8_message);
+      gpr_log(GPR_ERROR, "WSASend error: %s - this means we're going to leak.",
+              utf8_message);
       gpr_free(utf8_message);
+    /* I'm pretty sure this is a very bad situation there. Hence the log.
+       What will happen now is that the socket will neither wait for read
+       or write, unless the caller retry, which is unlikely, but I am not
+       sure if that's guaranteed. And there might also be a read pending.
+       This means that the future orphanage of that socket will be in limbo,
+       and we're going to leak it. I have no idea what could cause this
+       specific case however, aside from a parameter error from our call.
+       Normal read errors would actually happen during the overlapped
+       operation, which is the supported way to go for that. */
       tcp->outstanding_write = 0;
       tcp_unref(tcp);
+      /* Per the comment above, I'm going to treat that case as a hard failure
+         for now, and leave the option to catch that and debug. */
+      __debugbreak();
       return GRPC_ENDPOINT_WRITE_ERROR;
     }
   }

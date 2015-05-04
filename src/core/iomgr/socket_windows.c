@@ -55,41 +55,29 @@ grpc_winsocket *grpc_winsocket_create(SOCKET socket) {
   return r;
 }
 
-/* Call the pending operation callbacks to abort them. Holding the socket's
-   mutex state should be fine, as we shouldn't be trying to lock it again
-   in that abortion case, as it'd mean otherwise we're queuing another
-   operation, which is senseless. */
-static void shutdown_op(void(*cb)(void *opaque, int from_iocp), void* opaque) {
-  if (!cb) return;
-  cb(opaque, 0);
-}
-
-static void async_socket_shutdown(void *info, int dummy) {
-  grpc_winsocket *socket = (grpc_winsocket *) info;
-  void(*read_cb)(void *opaque, int from_iocp);
-  void(*write_cb)(void *opaque, int from_iocp);
-  void *opaque_read;
-  void *opaque_write;
-  gpr_mu_lock(&socket->state_mu);
-  read_cb = socket->read_info.cb;
-  opaque_read = socket->read_info.opaque;
-  write_cb = socket->write_info.cb;
-  opaque_write = socket->write_info.opaque;
-  gpr_mu_unlock(&socket->state_mu);
-  shutdown_op(read_cb, opaque_read);
-  shutdown_op(write_cb, opaque_write);
-}
-
 /* Schedule a shutdown of the socket operations. Will call the pending
    operations to abort them. We need to do that this way because of the
    various callsites of that function, which happens to be in various
-   mutex hold states. */
+   mutex hold states, and that'd be unsafe to call them directly. */
 void grpc_winsocket_shutdown(grpc_winsocket *socket) {
-  grpc_iomgr_add_delayed_callback(async_socket_shutdown, socket, 0);
+  gpr_mu_lock(&socket->state_mu);
+  if (socket->read_info.cb) {
+    grpc_iomgr_add_delayed_callback(socket->read_info.cb,
+                                    socket->read_info.opaque, 0);
+  }
+  if (socket->write_info.cb) {
+    grpc_iomgr_add_delayed_callback(socket->write_info.cb,
+                                    socket->write_info.opaque, 0);
+  }
+  gpr_mu_unlock(&socket->state_mu);
 }
 
 /* Abandons a socket. Either we're going to queue it up for garbage collecting
-   from the IO Completion Port thread, or destroy it immediately. */
+   from the IO Completion Port thread, or destroy it immediately. Note that this
+   mechanisms assumes that we're either always waiting for an operation, or we
+   explicitely know that we don't. If there is a future case where we can have
+   an "idle" socket which is neither trying to read or write, we'd start leaking
+   both memory and sockets. */
 void grpc_winsocket_orphan(grpc_winsocket *winsocket) {
   SOCKET socket = winsocket->socket;
   if (!winsocket->closed_early) {
