@@ -39,6 +39,10 @@
 
 #if !defined(GPR_NO_AUTODETECT_PLATFORM)
 #if defined(_WIN64) || defined(WIN64)
+#undef _WIN32_WINNT
+#undef WINVER
+#define _WIN32_WINNT 0x0600
+#define WINVER 0x0600
 #define GPR_WIN32 1
 #define GPR_ARCH_64 1
 #define GPR_GETPID_IN_PROCESS_H 1
@@ -51,6 +55,10 @@
 #define GPR_MSVC_TLS 1
 #endif
 #elif defined(_WIN32) || defined(WIN32)
+#undef _WIN32_WINNT
+#undef WINVER
+#define _WIN32_WINNT 0x0600
+#define WINVER 0x0600
 #define GPR_ARCH_32 1
 #define GPR_WIN32 1
 #define GPR_GETPID_IN_PROCESS_H 1
