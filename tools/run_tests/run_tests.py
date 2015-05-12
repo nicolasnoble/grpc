@@ -125,7 +125,7 @@ class CLanguage(object):
       else:
         binary = 'bins/%s/%s' % (config.build_config, target['name'])
       out.append(config.job_spec([binary], [binary]))
-    return out
+    return sorted(out)
 
   def make_targets(self):
     return ['buildtests_%s' % self.make_target]
