@@ -57,7 +57,7 @@ static void create_sockets(SOCKET sv[2]) {
   GPR_ASSERT(lst_sock != INVALID_SOCKET);
 
   memset(&addr, 0, sizeof(addr));
-  addr.sin_addr.s_addr = INADDR_ANY;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   addr.sin_family = AF_INET;
   r = bind(lst_sock, (struct sockaddr*)&addr, sizeof(addr));
   GPR_ASSERT(r != SOCKET_ERROR);
@@ -85,6 +85,8 @@ grpc_endpoint_pair grpc_iomgr_create_endpoint_pair(size_t read_slice_size) {
   SOCKET sv[2];
   grpc_endpoint_pair p;
   create_sockets(sv);
+  grpc_tcp_prepare_socket(sv[0]);
+  grpc_tcp_prepare_socket(sv[1]);
   p.client = grpc_tcp_create(grpc_winsocket_create(sv[1]));
   p.server = grpc_tcp_create(grpc_winsocket_create(sv[0]));
   return p;

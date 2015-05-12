@@ -133,9 +133,12 @@ static void on_read(void *tcpp, int from_iocp) {
   gpr_mu_unlock(&tcp->mu);
 
   if (do_abort) {
-    if (from_iocp) gpr_slice_unref(tcp->read_slice);
+    if (from_iocp) {
+      tcp->socket->read_info.outstanding = 0;
+      gpr_slice_unref(tcp->read_slice);
+      cb(opaque, NULL, 0, GRPC_ENDPOINT_CB_SHUTDOWN);
+    }
     tcp_unref(tcp);
-    cb(opaque, NULL, 0, GRPC_ENDPOINT_CB_SHUTDOWN);
     return;
   }
 
@@ -241,9 +244,12 @@ static void on_write(void *tcpp, int from_iocp) {
   GPR_ASSERT(tcp->socket->write_info.outstanding);
 
   if (do_abort) {
-    if (from_iocp) gpr_slice_buffer_reset_and_unref(&tcp->write_slices);
+    if (from_iocp) {
+      tcp->socket->write_info.outstanding = 0;
+      gpr_slice_buffer_reset_and_unref(&tcp->write_slices);
+      cb(opaque, GRPC_ENDPOINT_CB_SHUTDOWN);
+    }
     tcp_unref(tcp);
-    cb(opaque, GRPC_ENDPOINT_CB_SHUTDOWN);
     return;
   }
 
@@ -361,11 +367,13 @@ static void win_add_to_pollset(grpc_endpoint *ep, grpc_pollset *pollset) {
    concurrent access of the data structure in that regard. */
 static void win_shutdown(grpc_endpoint *ep) {
   grpc_tcp *tcp = (grpc_tcp *) ep;
+  int extra_refs = 0;
   gpr_mu_lock(&tcp->mu);
   /* At that point, what may happen is that we're already inside the IOCP
      callback. See the comments in on_read and on_write. */
   tcp->shutting_down = 1;
-  grpc_winsocket_shutdown(tcp->socket);
+  extra_refs = grpc_winsocket_shutdown(tcp->socket);
+  while (extra_refs--) tcp_ref(tcp);
   gpr_mu_unlock(&tcp->mu);
 }
 
