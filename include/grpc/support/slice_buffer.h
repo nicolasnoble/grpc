@@ -80,10 +80,15 @@ void gpr_slice_buffer_addn(gpr_slice_buffer *sb, gpr_slice *slices, size_t n);
 gpr_uint8 *gpr_slice_buffer_tiny_add(gpr_slice_buffer *sb, unsigned len);
 /* pop the last buffer, but don't unref it */
 void gpr_slice_buffer_pop(gpr_slice_buffer *sb);
+/* pop n buffers starting from the end, but don't unref them */
+void gpr_slice_buffer_popn(gpr_slice_buffer *sb, size_t n);
 /* clear a slice buffer, unref all elements */
 void gpr_slice_buffer_reset_and_unref(gpr_slice_buffer *sb);
 /* swap the contents of two slice buffers */
 void gpr_slice_buffer_swap(gpr_slice_buffer *a, gpr_slice_buffer *b);
+/* keeps `split` bytes in src, appends the rest to dst */
+void gpr_slice_buffer_split_tail(gpr_slice_buffer *src,
+                                 gpr_slice_buffer *dst, size_t split);
 
 #ifdef __cplusplus
 }

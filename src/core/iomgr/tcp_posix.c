@@ -60,7 +60,7 @@
 #endif
 
 /* Holds a slice array and associated state. */
-typedef struct grpc_tcp_slice_state {
+typedef struct tcp_slice_state {
   gpr_slice *slices;       /* Array of slices */
   size_t nslices;          /* Size of slices array. */
   ssize_t first_slice;     /* First valid slice in array */
@@ -68,11 +68,11 @@ typedef struct grpc_tcp_slice_state {
   gpr_slice working_slice; /* pointer to original final slice */
   int working_slice_valid; /* True if there is a working slice */
   int memory_owned;        /* True if slices array is owned */
-} grpc_tcp_slice_state;
+} tcp_slice_state;
 
 int grpc_tcp_trace = 0;
 
-static void slice_state_init(grpc_tcp_slice_state *state, gpr_slice *slices,
+static void slice_state_init(tcp_slice_state *state, gpr_slice *slices,
                              size_t nslices, size_t valid_slices) {
   state->slices = slices;
   state->nslices = nslices;
@@ -87,11 +87,11 @@ static void slice_state_init(grpc_tcp_slice_state *state, gpr_slice *slices,
 }
 
 /* Returns true if there is still available data */
-static int slice_state_has_available(grpc_tcp_slice_state *state) {
+static int slice_state_has_available(tcp_slice_state *state) {
   return state->first_slice != -1 && state->last_slice >= state->first_slice;
 }
 
-static ssize_t slice_state_slices_allocated(grpc_tcp_slice_state *state) {
+static ssize_t slice_state_slices_allocated(tcp_slice_state *state) {
   if (state->first_slice == -1) {
     return 0;
   } else {
@@ -99,7 +99,7 @@ static ssize_t slice_state_slices_allocated(grpc_tcp_slice_state *state) {
   }
 }
 
-static void slice_state_realloc(grpc_tcp_slice_state *state, size_t new_size) {
+static void slice_state_realloc(tcp_slice_state *state, size_t new_size) {
   /* TODO(klempner): use realloc instead when first_slice is 0 */
   /* TODO(klempner): Avoid a realloc in cases where it is unnecessary */
   gpr_slice *slices = state->slices;
@@ -126,7 +126,7 @@ static void slice_state_realloc(grpc_tcp_slice_state *state, size_t new_size) {
   state->memory_owned = 1;
 }
 
-static void slice_state_remove_prefix(grpc_tcp_slice_state *state,
+static void slice_state_remove_prefix(tcp_slice_state *state,
                                       size_t prefix_bytes) {
   gpr_slice *current_slice = &state->slices[state->first_slice];
   size_t current_slice_size;
@@ -150,7 +150,7 @@ static void slice_state_remove_prefix(grpc_tcp_slice_state *state,
   }
 }
 
-static void slice_state_destroy(grpc_tcp_slice_state *state) {
+static void slice_state_destroy(tcp_slice_state *state) {
   while (slice_state_has_available(state)) {
     gpr_slice_unref(state->slices[state->first_slice]);
     ++state->first_slice;
@@ -162,8 +162,9 @@ static void slice_state_destroy(grpc_tcp_slice_state *state) {
   }
 }
 
-void slice_state_transfer_ownership(grpc_tcp_slice_state *state,
-                                    gpr_slice **slices, size_t *nslices) {
+static void slice_state_transfer_ownership(tcp_slice_state *state,
+                                           gpr_slice **slices,
+                                           size_t *nslices) {
   *slices = state->slices + state->first_slice;
   *nslices = state->last_slice - state->first_slice + 1;
 
@@ -173,7 +174,7 @@ void slice_state_transfer_ownership(grpc_tcp_slice_state *state,
 
 /* Fills iov with the first min(iov_size, available) slices, returns number
    filled */
-static size_t slice_state_to_iovec(grpc_tcp_slice_state *state,
+static size_t slice_state_to_iovec(tcp_slice_state *state,
                                    struct iovec *iov, size_t iov_size) {
   size_t nslices = state->last_slice - state->first_slice + 1;
   gpr_slice *slices = state->slices + state->first_slice;
@@ -191,7 +192,7 @@ static size_t slice_state_to_iovec(grpc_tcp_slice_state *state,
 
 /* Makes n blocks available at the end of state, writes them into iov, and
    returns the number of bytes allocated */
-static size_t slice_state_append_blocks_into_iovec(grpc_tcp_slice_state *state,
+static size_t slice_state_append_blocks_into_iovec(tcp_slice_state *state,
                                                    struct iovec *iov, size_t n,
                                                    size_t slice_size) {
   size_t target_size;
@@ -238,7 +239,7 @@ static size_t slice_state_append_blocks_into_iovec(grpc_tcp_slice_state *state,
 
 /* Remove the last n bytes from state */
 /* TODO(klempner): Consider having this defer actual deletion until later */
-static void slice_state_remove_last(grpc_tcp_slice_state *state, size_t bytes) {
+static void slice_state_remove_last(tcp_slice_state *state, size_t bytes) {
   while (bytes > 0 && slice_state_has_available(state)) {
     if (GPR_SLICE_LENGTH(state->slices[state->last_slice]) > bytes) {
       state->working_slice = state->slices[state->last_slice];
@@ -269,26 +270,27 @@ typedef struct {
   size_t slice_size;
   gpr_refcount refcount;
 
-  grpc_endpoint_read_cb read_cb;
+  grpc_endpoint_op_cb read_cb;
   void *read_user_data;
-  grpc_endpoint_write_cb write_cb;
+  gpr_slice_buffer *read_sb;
+  grpc_endpoint_op_cb write_cb;
   void *write_user_data;
 
-  grpc_tcp_slice_state write_state;
+  tcp_slice_state write_state;
 
   grpc_iomgr_closure read_closure;
   grpc_iomgr_closure write_closure;
 } grpc_tcp;
 
-static void grpc_tcp_handle_read(void *arg /* grpc_tcp */, int success);
-static void grpc_tcp_handle_write(void *arg /* grpc_tcp */, int success);
+static void tcp_handle_read(void *arg /* grpc_tcp */, int success);
+static void tcp_handle_write(void *arg /* grpc_tcp */, int success);
 
-static void grpc_tcp_shutdown(grpc_endpoint *ep) {
+static void tcp_shutdown(grpc_endpoint *ep) {
   grpc_tcp *tcp = (grpc_tcp *)ep;
   grpc_fd_shutdown(tcp->em_fd);
 }
 
-static void grpc_tcp_unref(grpc_tcp *tcp) {
+static void tcp_unref(grpc_tcp *tcp) {
   int refcount_zero = gpr_unref(&tcp->refcount);
   if (refcount_zero) {
     grpc_fd_orphan(tcp->em_fd, NULL, NULL);
@@ -296,14 +298,14 @@ static void grpc_tcp_unref(grpc_tcp *tcp) {
   }
 }
 
-static void grpc_tcp_destroy(grpc_endpoint *ep) {
+static void tcp_destroy(grpc_endpoint *ep) {
   grpc_tcp *tcp = (grpc_tcp *)ep;
-  grpc_tcp_unref(tcp);
+  tcp_unref(tcp);
 }
 
 static void call_read_cb(grpc_tcp *tcp, gpr_slice *slices, size_t nslices,
-                         grpc_endpoint_cb_status status) {
-  grpc_endpoint_read_cb cb = tcp->read_cb;
+                         grpc_endpoint_op_status status) {
+  grpc_endpoint_op_cb cb = tcp->read_cb;
 
   if (grpc_tcp_trace) {
     size_t i;
@@ -317,19 +319,21 @@ static void call_read_cb(grpc_tcp *tcp, gpr_slice *slices, size_t nslices,
     }
   }
 
+  gpr_slice_buffer_addn(tcp->read_sb, slices, nslices);
+
   tcp->read_cb = NULL;
-  cb(tcp->read_user_data, slices, nslices, status);
+  cb(tcp->read_user_data, status);
 }
 
 #define INLINE_SLICE_BUFFER_SIZE 8
 #define MAX_READ_IOVEC 4
-static void grpc_tcp_continue_read(grpc_tcp *tcp) {
+static void tcp_continue_read(grpc_tcp *tcp) {
   gpr_slice static_read_slices[INLINE_SLICE_BUFFER_SIZE];
   struct msghdr msg;
   struct iovec iov[MAX_READ_IOVEC];
   ssize_t read_bytes;
   ssize_t allocated_bytes;
-  struct grpc_tcp_slice_state read_state;
+  struct tcp_slice_state read_state;
   gpr_slice *final_slices;
   size_t final_nslices;
 
@@ -377,9 +381,9 @@ static void grpc_tcp_continue_read(grpc_tcp *tcp) {
         slice_state_transfer_ownership(&read_state, &final_slices,
                                        &final_nslices);
         tcp->finished_edge = 1;
-        call_read_cb(tcp, final_slices, final_nslices, GRPC_ENDPOINT_CB_OK);
+        call_read_cb(tcp, final_slices, final_nslices, GRPC_ENDPOINT_OP_DONE);
         slice_state_destroy(&read_state);
-        grpc_tcp_unref(tcp);
+        tcp_unref(tcp);
       } else {
         /* We've consumed the edge, request a new one */
         slice_state_destroy(&read_state);
@@ -387,9 +391,9 @@ static void grpc_tcp_continue_read(grpc_tcp *tcp) {
       }
     } else {
       /* TODO(klempner): Log interesting errors */
-      call_read_cb(tcp, NULL, 0, GRPC_ENDPOINT_CB_ERROR);
+      call_read_cb(tcp, NULL, 0, GRPC_ENDPOINT_OP_ERROR);
       slice_state_destroy(&read_state);
-      grpc_tcp_unref(tcp);
+      tcp_unref(tcp);
     }
   } else if (read_bytes == 0) {
     /* 0 read size ==> end of stream */
@@ -397,12 +401,12 @@ static void grpc_tcp_continue_read(grpc_tcp *tcp) {
       /* there were bytes already read: pass them up to the application */
       slice_state_transfer_ownership(&read_state, &final_slices,
                                      &final_nslices);
-      call_read_cb(tcp, final_slices, final_nslices, GRPC_ENDPOINT_CB_EOF);
+      call_read_cb(tcp, final_slices, final_nslices, GRPC_ENDPOINT_OP_ERROR);
     } else {
-      call_read_cb(tcp, NULL, 0, GRPC_ENDPOINT_CB_EOF);
+      call_read_cb(tcp, NULL, 0, GRPC_ENDPOINT_OP_ERROR);
     }
     slice_state_destroy(&read_state);
-    grpc_tcp_unref(tcp);
+    tcp_unref(tcp);
   } else {
     if (tcp->iov_size < MAX_READ_IOVEC) {
       ++tcp->iov_size;
@@ -410,48 +414,53 @@ static void grpc_tcp_continue_read(grpc_tcp *tcp) {
     GPR_ASSERT(slice_state_has_available(&read_state));
     slice_state_transfer_ownership(&read_state, &final_slices,
                                    &final_nslices);
-    call_read_cb(tcp, final_slices, final_nslices, GRPC_ENDPOINT_CB_OK);
+    call_read_cb(tcp, final_slices, final_nslices, GRPC_ENDPOINT_OP_DONE);
     slice_state_destroy(&read_state);
-    grpc_tcp_unref(tcp);
+    tcp_unref(tcp);
   }
 
   GRPC_TIMER_END(GRPC_PTAG_HANDLE_READ, 0);
 }
 
-static void grpc_tcp_handle_read(void *arg /* grpc_tcp */, int success) {
+static void tcp_handle_read(void *arg /* grpc_tcp */, int success) {
   grpc_tcp *tcp = (grpc_tcp *)arg;
   GPR_ASSERT(!tcp->finished_edge);
 
   if (!success) {
-    call_read_cb(tcp, NULL, 0, GRPC_ENDPOINT_CB_SHUTDOWN);
-    grpc_tcp_unref(tcp);
+    call_read_cb(tcp, NULL, 0, GRPC_ENDPOINT_OP_ERROR);
+    tcp_unref(tcp);
   } else {
-    grpc_tcp_continue_read(tcp);
+    tcp_continue_read(tcp);
   }
 }
 
-static void grpc_tcp_notify_on_read(grpc_endpoint *ep, grpc_endpoint_read_cb cb,
-                                    void *user_data) {
+static grpc_endpoint_op_status tcp_read(grpc_endpoint *ep,
+                                        gpr_slice_buffer *sb,
+                                        grpc_endpoint_op_cb cb,
+                                        void *user_data) {
   grpc_tcp *tcp = (grpc_tcp *)ep;
   GPR_ASSERT(tcp->read_cb == NULL);
   tcp->read_cb = cb;
   tcp->read_user_data = user_data;
+  tcp->read_sb = sb;
   gpr_ref(&tcp->refcount);
   if (tcp->finished_edge) {
     tcp->finished_edge = 0;
     grpc_fd_notify_on_read(tcp->em_fd, &tcp->read_closure);
   } else {
-    grpc_iomgr_add_callback(grpc_tcp_handle_read, tcp);
+    grpc_iomgr_add_callback(tcp_handle_read, tcp);
   }
+
+  return GRPC_ENDPOINT_OP_PENDING;
 }
 
 #define MAX_WRITE_IOVEC 16
-static grpc_endpoint_write_status grpc_tcp_flush(grpc_tcp *tcp) {
+static grpc_endpoint_op_status tcp_flush(grpc_tcp *tcp) {
   struct msghdr msg;
   struct iovec iov[MAX_WRITE_IOVEC];
   int iov_size;
   ssize_t sent_length;
-  grpc_tcp_slice_state *state = &tcp->write_state;
+  tcp_slice_state *state = &tcp->write_state;
 
   for (;;) {
     iov_size = slice_state_to_iovec(state, iov, MAX_WRITE_IOVEC);
@@ -473,11 +482,11 @@ static grpc_endpoint_write_status grpc_tcp_flush(grpc_tcp *tcp) {
 
     if (sent_length < 0) {
       if (errno == EAGAIN) {
-        return GRPC_ENDPOINT_WRITE_PENDING;
+        return GRPC_ENDPOINT_OP_PENDING;
       } else {
         /* TODO(klempner): Log some of these */
         slice_state_destroy(state);
-        return GRPC_ENDPOINT_WRITE_ERROR;
+        return GRPC_ENDPOINT_OP_ERROR;
       }
     }
 
@@ -485,60 +494,59 @@ static grpc_endpoint_write_status grpc_tcp_flush(grpc_tcp *tcp) {
     slice_state_remove_prefix(state, sent_length);
 
     if (!slice_state_has_available(state)) {
-      return GRPC_ENDPOINT_WRITE_DONE;
+      return GRPC_ENDPOINT_OP_DONE;
     }
   };
 }
 
-static void grpc_tcp_handle_write(void *arg /* grpc_tcp */, int success) {
+static void tcp_handle_write(void *arg /* grpc_tcp */, int success) {
   grpc_tcp *tcp = (grpc_tcp *)arg;
-  grpc_endpoint_write_status write_status;
-  grpc_endpoint_cb_status cb_status;
-  grpc_endpoint_write_cb cb;
+  grpc_endpoint_op_status write_status;
+  grpc_endpoint_op_status cb_status;
+  grpc_endpoint_op_cb cb;
 
   if (!success) {
     slice_state_destroy(&tcp->write_state);
     cb = tcp->write_cb;
     tcp->write_cb = NULL;
-    cb(tcp->write_user_data, GRPC_ENDPOINT_CB_SHUTDOWN);
-    grpc_tcp_unref(tcp);
+    cb(tcp->write_user_data, GRPC_ENDPOINT_OP_ERROR);
+    tcp_unref(tcp);
     return;
   }
 
   GRPC_TIMER_BEGIN(GRPC_PTAG_TCP_CB_WRITE, 0);
-  write_status = grpc_tcp_flush(tcp);
-  if (write_status == GRPC_ENDPOINT_WRITE_PENDING) {
+  write_status = tcp_flush(tcp);
+  if (write_status == GRPC_ENDPOINT_OP_PENDING) {
     grpc_fd_notify_on_write(tcp->em_fd, &tcp->write_closure);
   } else {
     slice_state_destroy(&tcp->write_state);
-    if (write_status == GRPC_ENDPOINT_WRITE_DONE) {
-      cb_status = GRPC_ENDPOINT_CB_OK;
+    if (write_status == GRPC_ENDPOINT_OP_DONE) {
+      cb_status = GRPC_ENDPOINT_OP_DONE;
     } else {
-      cb_status = GRPC_ENDPOINT_CB_ERROR;
+      cb_status = GRPC_ENDPOINT_OP_ERROR;
     }
     cb = tcp->write_cb;
     tcp->write_cb = NULL;
     cb(tcp->write_user_data, cb_status);
-    grpc_tcp_unref(tcp);
+    tcp_unref(tcp);
   }
   GRPC_TIMER_END(GRPC_PTAG_TCP_CB_WRITE, 0);
 }
 
-static grpc_endpoint_write_status grpc_tcp_write(grpc_endpoint *ep,
-                                                 gpr_slice *slices,
-                                                 size_t nslices,
-                                                 grpc_endpoint_write_cb cb,
-                                                 void *user_data) {
+static grpc_endpoint_op_status tcp_write(grpc_endpoint *ep,
+                                         gpr_slice_buffer *sb,
+                                         grpc_endpoint_op_cb cb,
+                                         void *user_data) {
   grpc_tcp *tcp = (grpc_tcp *)ep;
-  grpc_endpoint_write_status status;
+  grpc_endpoint_op_status status;
 
   if (grpc_tcp_trace) {
     size_t i;
 
-    for (i = 0; i < nslices; i++) {
+    for (i = 0; i < sb->count; i++) {
       char *data =
-          gpr_hexdump((char *)GPR_SLICE_START_PTR(slices[i]),
-                      GPR_SLICE_LENGTH(slices[i]), GPR_HEXDUMP_PLAINTEXT);
+          gpr_hexdump((char *)GPR_SLICE_START_PTR(sb->slices[i]),
+                      GPR_SLICE_LENGTH(sb->slices[i]), GPR_HEXDUMP_PLAINTEXT);
       gpr_log(GPR_DEBUG, "WRITE %p: %s", tcp, data);
       gpr_free(data);
     }
@@ -546,30 +554,33 @@ static grpc_endpoint_write_status grpc_tcp_write(grpc_endpoint *ep,
 
   GRPC_TIMER_BEGIN(GRPC_PTAG_TCP_WRITE, 0);
   GPR_ASSERT(tcp->write_cb == NULL);
-  slice_state_init(&tcp->write_state, slices, nslices, nslices);
+  slice_state_init(&tcp->write_state, sb->slices, sb->count, sb->count);
 
-  status = grpc_tcp_flush(tcp);
-  if (status == GRPC_ENDPOINT_WRITE_PENDING) {
+  status = tcp_flush(tcp);
+  if (status == GRPC_ENDPOINT_OP_PENDING) {
     /* TODO(klempner): Consider inlining rather than malloc for small nslices */
-    slice_state_realloc(&tcp->write_state, nslices);
+    slice_state_realloc(&tcp->write_state, sb->count);
     gpr_ref(&tcp->refcount);
     tcp->write_cb = cb;
     tcp->write_user_data = user_data;
     grpc_fd_notify_on_write(tcp->em_fd, &tcp->write_closure);
   }
 
+  gpr_slice_buffer_reset_and_unref(sb);
+
   GRPC_TIMER_END(GRPC_PTAG_TCP_WRITE, 0);
   return status;
 }
 
-static void grpc_tcp_add_to_pollset(grpc_endpoint *ep, grpc_pollset *pollset) {
+static void tcp_add_to_pollset(grpc_endpoint *ep, grpc_pollset *pollset) {
   grpc_tcp *tcp = (grpc_tcp *)ep;
   grpc_pollset_add_fd(pollset, tcp->em_fd);
 }
 
 static const grpc_endpoint_vtable vtable = {
-    grpc_tcp_notify_on_read, grpc_tcp_write, grpc_tcp_add_to_pollset,
-    grpc_tcp_shutdown, grpc_tcp_destroy};
+    tcp_read, tcp_write, tcp_add_to_pollset,
+    tcp_shutdown, tcp_destroy
+};
 
 grpc_endpoint *grpc_tcp_create(grpc_fd *em_fd, size_t slice_size) {
   grpc_tcp *tcp = (grpc_tcp *)gpr_malloc(sizeof(grpc_tcp));
@@ -586,9 +597,9 @@ grpc_endpoint *grpc_tcp_create(grpc_fd *em_fd, size_t slice_size) {
   /* paired with unref in grpc_tcp_destroy */
   gpr_ref_init(&tcp->refcount, 1);
   tcp->em_fd = em_fd;
-  tcp->read_closure.cb = grpc_tcp_handle_read;
+  tcp->read_closure.cb = tcp_handle_read;
   tcp->read_closure.cb_arg = tcp;
-  tcp->write_closure.cb = grpc_tcp_handle_write;
+  tcp->write_closure.cb = tcp_handle_write;
   tcp->write_closure.cb_arg = tcp;
   return &tcp->base;
 }

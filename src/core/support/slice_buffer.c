@@ -151,6 +151,10 @@ void gpr_slice_buffer_pop(gpr_slice_buffer *sb) {
   }
 }
 
+void gpr_slice_buffer_popn(gpr_slice_buffer *sb, size_t n) {
+  while (n--) gpr_slice_buffer_pop(sb);
+}
+
 void gpr_slice_buffer_reset_and_unref(gpr_slice_buffer *sb) {
   size_t i;
 
@@ -189,4 +193,43 @@ void gpr_slice_buffer_swap(gpr_slice_buffer *a, gpr_slice_buffer *b) {
     /* no inlining: easy swap */
     GPR_SWAP(gpr_slice *, a->slices, b->slices);
   }
+}
+
+void gpr_slice_buffer_split_tail(gpr_slice_buffer *src,
+                                 gpr_slice_buffer *dst, size_t split) {
+  size_t i, slice_index = 0;
+  unsigned remainder;
+  
+  /* There's nothing to split out, we want to keep everything */
+  if (split == src->length) return;
+
+  /* We want to offload everything to the second buffer */
+  if (split == 0) {
+    gpr_slice_buffer_addn(dst, src->slices, src->count);
+    gpr_slice_buffer_reset_and_unref(src);
+    return;
+  }
+
+  GPR_ASSERT(src->length > split);
+
+  for (slice_index = 0; split > 0; slice_index++) {
+    /* Thanks to the assert at the beginning, this can't overflow */
+    size_t slice_size = GPR_SLICE_LENGTH(src->slices[slice_index]);
+    if (split >= slice_size) {
+      split -= slice_size;
+    } else {
+      gpr_slice *slice = src->slices + slice_index;
+      size_t slice_remainder = split - slice_size;
+      src->length -= slice_remainder;
+      gpr_slice_buffer_add(dst, gpr_slice_split_tail(slice, split));
+      split = 0;
+    }
+  }
+
+  remainder = src->count - slice_index;
+  if (remainder == 0) return;
+
+  gpr_slice_buffer_addn(dst, src->slices + slice_index, remainder);
+  for (i = 0; i < remainder; i++) gpr_slice_unref(src->slices[slice_index + i]);
+  gpr_slice_buffer_popn(dst, remainder);
 }

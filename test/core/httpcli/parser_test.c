@@ -46,6 +46,7 @@ static void test_succeeds(grpc_slice_split_mode split_mode, char *response,
                           int expect_status, char *expect_body, ...) {
   grpc_httpcli_parser parser;
   gpr_slice input_slice = gpr_slice_from_copied_string(response);
+  gpr_slice_buffer sb;
   size_t num_slices;
   size_t i;
   gpr_slice *slices;
@@ -53,14 +54,14 @@ static void test_succeeds(grpc_slice_split_mode split_mode, char *response,
 
   grpc_split_slices(split_mode, &input_slice, 1, &slices, &num_slices);
   gpr_slice_unref(input_slice);
+  gpr_slice_buffer_init(&sb);
 
   grpc_httpcli_parser_init(&parser);
 
-  for (i = 0; i < num_slices; i++) {
-    GPR_ASSERT(grpc_httpcli_parser_parse(&parser, slices[i]));
-    gpr_slice_unref(slices[i]);
-  }
+  gpr_slice_buffer_addn(&sb, slices, num_slices);
+  GPR_ASSERT(grpc_httpcli_parser_parse(&parser, &sb));
   GPR_ASSERT(grpc_httpcli_parser_eof(&parser));
+  gpr_slice_buffer_destroy(&sb);
 
   GPR_ASSERT(expect_status == parser.r.status);
   if (expect_body != NULL) {
@@ -95,21 +96,19 @@ static void test_fails(grpc_slice_split_mode split_mode, char *response) {
   grpc_httpcli_parser parser;
   gpr_slice input_slice = gpr_slice_from_copied_string(response);
   size_t num_slices;
-  size_t i;
   gpr_slice *slices;
+  gpr_slice_buffer sb;
   int done = 0;
 
   grpc_split_slices(split_mode, &input_slice, 1, &slices, &num_slices);
   gpr_slice_unref(input_slice);
+  gpr_slice_buffer_init(&sb);
 
   grpc_httpcli_parser_init(&parser);
 
-  for (i = 0; i < num_slices; i++) {
-    if (!done && !grpc_httpcli_parser_parse(&parser, slices[i])) {
-      done = 1;
-    }
-    gpr_slice_unref(slices[i]);
-  }
+  gpr_slice_buffer_addn(&sb, slices, num_slices);
+  done = grpc_httpcli_parser_parse(&parser, &sb);
+  gpr_slice_buffer_destroy(&sb);
   if (!done && !grpc_httpcli_parser_eof(&parser)) {
     done = 1;
   }

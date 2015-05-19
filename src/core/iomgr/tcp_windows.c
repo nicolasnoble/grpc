@@ -83,13 +83,14 @@ typedef struct grpc_tcp {
   /* Refcounting how many operations are in progress. */
   gpr_refcount refcount;
 
-  grpc_endpoint_read_cb read_cb;
+  grpc_endpoint_op_cb read_cb;
   void *read_user_data;
   gpr_slice read_slice;
+  gpr_slice_buffer *read_sb;
 
-  grpc_endpoint_write_cb write_cb;
+  grpc_endpoint_op_cb write_cb;
   void *write_user_data;
-  gpr_slice_buffer write_slices;
+  gpr_slice_buffer *write_sb;
 
   /* The IO Completion Port runs from another thread. We need some mechanism
      to protect ourselves when requesting a shutdown. */
@@ -103,7 +104,6 @@ static void tcp_ref(grpc_tcp *tcp) {
 
 static void tcp_unref(grpc_tcp *tcp) {
   if (gpr_unref(&tcp->refcount)) {
-    gpr_slice_buffer_destroy(&tcp->write_slices);
     grpc_winsocket_orphan(tcp->socket);
     gpr_mu_destroy(&tcp->mu);
     gpr_free(tcp);
@@ -114,13 +114,11 @@ static void tcp_unref(grpc_tcp *tcp) {
 static void on_read(void *tcpp, int from_iocp) {
   grpc_tcp *tcp = (grpc_tcp *) tcpp;
   grpc_winsocket *socket = tcp->socket;
-  gpr_slice sub;
-  gpr_slice *slice = NULL;
-  size_t nslices = 0;
-  grpc_endpoint_cb_status status;
+  grpc_endpoint_cb_status status = GRPC_ENDPOINT_OP_ERROR;
   grpc_endpoint_read_cb cb;
   grpc_winsocket_callback_info *info = &socket->read_info;
   void *opaque = tcp->read_user_data;
+  gpr_slice_buffer *sb = &tcp->read_sb;
   int do_abort = 0;
 
   gpr_mu_lock(&tcp->mu);
@@ -150,27 +148,26 @@ static void on_read(void *tcpp, int from_iocp) {
     char *utf8_message = gpr_format_message(info->wsa_error);
     gpr_log(GPR_ERROR, "ReadFile overlapped error: %s", utf8_message);
     gpr_free(utf8_message);
-    status = GRPC_ENDPOINT_CB_ERROR;
   } else {
     if (info->bytes_transfered != 0) {
-      sub = gpr_slice_sub(tcp->read_slice, 0, info->bytes_transfered);
-      status = GRPC_ENDPOINT_CB_OK;
-      slice = &sub;
-      nslices = 1;
+      status = GRPC_ENDPOINT_OP_DONE;
+      gpr_slice_buffer_add(tcp->read_sb,
+                           gpr_slice_sub(tcp->read_slice, 0,
+                                         info->bytes_transfered));
     } else {
       gpr_slice_unref(tcp->read_slice);
-      status = GRPC_ENDPOINT_CB_EOF;
     }
   }
 
   tcp->socket->read_info.outstanding = 0;
 
   tcp_unref(tcp);
-  cb(opaque, slice, nslices, status);
+  cb(opaque, status);
 }
 
-static void win_notify_on_read(grpc_endpoint *ep,
-                               grpc_endpoint_read_cb cb, void *arg) {
+static grpc_endpoint_op_status win_read(grpc_endpoint *ep,
+                                        gpr_slice_buffer *sb,
+                                        grpc_endpoint_op_cb cb, void *arg) {
   grpc_tcp *tcp = (grpc_tcp *) ep;
   grpc_winsocket *handle = tcp->socket;
   grpc_winsocket_callback_info *info = &handle->read_info;
@@ -180,14 +177,15 @@ static void win_notify_on_read(grpc_endpoint *ep,
   WSABUF buffer;
 
   GPR_ASSERT(!tcp->socket->read_info.outstanding);
+  GPR_ASSERT(sb->length);
   if (tcp->shutting_down) {
-    cb(arg, NULL, 0, GRPC_ENDPOINT_CB_SHUTDOWN);
-    return;
+    return GRPC_ENDPOINT_OP_ERROR;
   }
   tcp_ref(tcp);
   tcp->socket->read_info.outstanding = 1;
   tcp->read_cb = cb;
   tcp->read_user_data = arg;
+  tcp->read_sb = sb;
 
   tcp->read_slice = gpr_slice_malloc(8192);
 
@@ -202,9 +200,8 @@ static void win_notify_on_read(grpc_endpoint *ep,
   /* Did we get data immediately ? Yay. */
   if (info->wsa_error != WSAEWOULDBLOCK) {
     info->bytes_transfered = bytes_read;
-    /* This might heavily recurse. */
-    on_read(tcp, 1);
-    return;
+    gpr_slice_buffer_add(sb, tcp->read_slice);
+    return GRPC_ENDPOINT_OP_DONE;
   }
 
   /* Otherwise, let's retry, by queuing a read. */
@@ -217,11 +214,12 @@ static void win_notify_on_read(grpc_endpoint *ep,
     if (wsa_error != WSA_IO_PENDING) {
       info->wsa_error = wsa_error;
       on_read(tcp, 1);
-      return;
+      return GRPC_ENDPOINT_OP_PENDING;
     }
   }
 
   grpc_socket_notify_on_read(tcp->socket, on_read, tcp);
+  return GRPC_ENDPOINT_OP_PENDING;
 }
 
 /* Asynchronous callback from the IOCP, or the background thread. */
@@ -229,7 +227,7 @@ static void on_write(void *tcpp, int from_iocp) {
   grpc_tcp *tcp = (grpc_tcp *) tcpp;
   grpc_winsocket *handle = tcp->socket;
   grpc_winsocket_callback_info *info = &handle->write_info;
-  grpc_endpoint_cb_status status = GRPC_ENDPOINT_CB_OK;
+  grpc_endpoint_cb_status status = GRPC_ENDPOINT_OP_DONE;
   grpc_endpoint_write_cb cb;
   void *opaque = tcp->write_user_data;
   int do_abort = 0;
@@ -248,7 +246,6 @@ static void on_write(void *tcpp, int from_iocp) {
   if (do_abort) {
     if (from_iocp) {
       tcp->socket->write_info.outstanding = 0;
-      gpr_slice_buffer_reset_and_unref(&tcp->write_slices);
     }
     tcp_unref(tcp);
     if (cb) cb(opaque, GRPC_ENDPOINT_CB_SHUTDOWN);
@@ -261,12 +258,11 @@ static void on_write(void *tcpp, int from_iocp) {
     char *utf8_message = gpr_format_message(info->wsa_error);
     gpr_log(GPR_ERROR, "WSASend overlapped error: %s", utf8_message);
     gpr_free(utf8_message);
-    status = GRPC_ENDPOINT_CB_ERROR;
+    status = GRPC_ENDPOINT_OP_ERROR;
   } else {
-    GPR_ASSERT(info->bytes_transfered == tcp->write_slices.length);
+    GPR_ASSERT(info->bytes_transfered == tcp->write_sb->length);
   }
 
-  gpr_slice_buffer_reset_and_unref(&tcp->write_slices);
   tcp->socket->write_info.outstanding = 0;
 
   tcp_unref(tcp);
@@ -274,10 +270,10 @@ static void on_write(void *tcpp, int from_iocp) {
 }
 
 /* Initiates a write. */
-static grpc_endpoint_write_status win_write(grpc_endpoint *ep,
-                                            gpr_slice *slices, size_t nslices,
-                                            grpc_endpoint_write_cb cb,
-                                            void *arg) {
+static grpc_endpoint_op_status win_write(grpc_endpoint *ep,
+                                         gpr_slice_buffer *sb,
+                                         grpc_endpoint_op_cb cb,
+                                         void *arg) {
   grpc_tcp *tcp = (grpc_tcp *) ep;
   grpc_winsocket *socket = tcp->socket;
   grpc_winsocket_callback_info *info = &socket->write_info;
@@ -290,7 +286,7 @@ static grpc_endpoint_write_status win_write(grpc_endpoint *ep,
 
   GPR_ASSERT(!tcp->socket->write_info.outstanding);
   if (tcp->shutting_down) {
-    return GRPC_ENDPOINT_WRITE_ERROR;
+    return GRPC_ENDPOINT_OP_ERROR;
   }
   tcp_ref(tcp);
 
@@ -298,20 +294,20 @@ static grpc_endpoint_write_status win_write(grpc_endpoint *ep,
   tcp->write_cb = cb;
   tcp->write_user_data = arg;
 
-  gpr_slice_buffer_addn(&tcp->write_slices, slices, nslices);
+  tcp->write_sb = sb;
 
-  if (tcp->write_slices.count > GPR_ARRAY_SIZE(local_buffers)) {
-    buffers = (WSABUF *) gpr_malloc(sizeof(WSABUF) * tcp->write_slices.count);
+  if (sb->count > GPR_ARRAY_SIZE(local_buffers)) {
+    buffers = (WSABUF *) gpr_malloc(sizeof(WSABUF) * sb->count);
     allocated = buffers;
   }
 
-  for (i = 0; i < tcp->write_slices.count; i++) {
-    buffers[i].len = GPR_SLICE_LENGTH(tcp->write_slices.slices[i]);
-    buffers[i].buf = (char *)GPR_SLICE_START_PTR(tcp->write_slices.slices[i]);
+  for (i = 0; i < sb->count; i++) {
+    buffers[i].len = GPR_SLICE_LENGTH(sb->slices[i]);
+    buffers[i].buf = (char *)GPR_SLICE_START_PTR(sb->slices[i]);
   }
 
   /* First, let's try a synchronous, non-blocking write. */
-  status = WSASend(socket->socket, buffers, tcp->write_slices.count,
+  status = WSASend(socket->socket, buffers, sb->count,
                    &bytes_sent, 0, NULL, NULL);
   info->wsa_error = status == 0 ? 0 : WSAGetLastError();
 
@@ -319,17 +315,16 @@ static grpc_endpoint_write_status win_write(grpc_endpoint *ep,
      connection that has its send queue filled up. But if we don't, then we can
      avoid doing an async write operation at all. */
   if (info->wsa_error != WSAEWOULDBLOCK) {
-    grpc_endpoint_write_status ret = GRPC_ENDPOINT_WRITE_ERROR;
+    grpc_endpoint_op_status ret = GRPC_ENDPOINT_OP_ERROR;
     if (status == 0) {
-      ret = GRPC_ENDPOINT_WRITE_DONE;
-      GPR_ASSERT(bytes_sent == tcp->write_slices.length);
+      ret = GRPC_ENDPOINT_OP_DONE;
+      GPR_ASSERT(bytes_sent == sb->length);
     } else {
       char *utf8_message = gpr_format_message(info->wsa_error);
       gpr_log(GPR_ERROR, "WSASend error: %s", utf8_message);
       gpr_free(utf8_message);
     }
     if (allocated) gpr_free(allocated);
-    gpr_slice_buffer_reset_and_unref(&tcp->write_slices);
     tcp->socket->write_info.outstanding = 0;
     tcp_unref(tcp);
     return ret;
@@ -338,24 +333,23 @@ static grpc_endpoint_write_status win_write(grpc_endpoint *ep,
   /* If we got a WSAEWOULDBLOCK earlier, then we need to re-do the same
      operation, this time asynchronously. */
   memset(&socket->write_info.overlapped, 0, sizeof(OVERLAPPED));
-  status = WSASend(socket->socket, buffers, tcp->write_slices.count,
+  status = WSASend(socket->socket, buffers, sb->count,
                    &bytes_sent, 0, &socket->write_info.overlapped, NULL);
   if (allocated) gpr_free(allocated);
 
   if (status != 0) {
     int wsa_error = WSAGetLastError();
     if (wsa_error != WSA_IO_PENDING) {
-      gpr_slice_buffer_reset_and_unref(&tcp->write_slices);
       tcp->socket->write_info.outstanding = 0;
       tcp_unref(tcp);
-      return GRPC_ENDPOINT_WRITE_ERROR;
+      return GRPC_ENDPOINT_OP_ERROR;
     }
   }
 
   /* As all is now setup, we can now ask for the IOCP notification. It may
      trigger the callback immediately however, but no matter. */
   grpc_socket_notify_on_write(socket, on_write, tcp);
-  return GRPC_ENDPOINT_WRITE_PENDING;
+  return GRPC_ENDPOINT_OP_PENDING;
 }
 
 static void win_add_to_pollset(grpc_endpoint *ep, grpc_pollset *pollset) {
@@ -387,7 +381,7 @@ static void win_destroy(grpc_endpoint *ep) {
 }
 
 static grpc_endpoint_vtable vtable = {
-  win_notify_on_read, win_write, win_add_to_pollset, win_shutdown, win_destroy
+  win_read, win_write, win_add_to_pollset, win_shutdown, win_destroy
 };
 
 grpc_endpoint *grpc_tcp_create(grpc_winsocket *socket) {
@@ -396,7 +390,6 @@ grpc_endpoint *grpc_tcp_create(grpc_winsocket *socket) {
   tcp->base.vtable = &vtable;
   tcp->socket = socket;
   gpr_mu_init(&tcp->mu);
-  gpr_slice_buffer_init(&tcp->write_slices);
   gpr_ref_init(&tcp->refcount, 1);
   return &tcp->base;
 }

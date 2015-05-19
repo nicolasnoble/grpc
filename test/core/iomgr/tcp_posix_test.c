@@ -118,11 +118,13 @@ struct read_socket_state {
   gpr_cv cv;
   ssize_t read_bytes;
   ssize_t target_read_bytes;
+  gpr_slice_buffer sb;
 };
 
-static ssize_t count_and_unref_slices(gpr_slice *slices, size_t nslices,
-                                      int *current_data) {
+static ssize_t count_and_unref_slices(gpr_slice_buffer *sb, int *current_data) {
   ssize_t num_bytes = 0;
+  size_t nslices = sb->count;
+  gpr_slice *slices = sb->slices;
   unsigned i, j;
   unsigned char *buf;
   for (i = 0; i < nslices; ++i) {
@@ -132,31 +134,33 @@ static ssize_t count_and_unref_slices(gpr_slice *slices, size_t nslices,
       *current_data = (*current_data + 1) % 256;
     }
     num_bytes += GPR_SLICE_LENGTH(slices[i]);
-    gpr_slice_unref(slices[i]);
   }
+  gpr_slice_buffer_reset_and_unref(sb);
   return num_bytes;
 }
 
-static void read_cb(void *user_data, gpr_slice *slices, size_t nslices,
-                    grpc_endpoint_cb_status error) {
+static void read_cb(void *user_data,
+                    grpc_endpoint_op_status status) {
   struct read_socket_state *state = (struct read_socket_state *)user_data;
   ssize_t read_bytes;
   int current_data;
 
-  GPR_ASSERT(error == GRPC_ENDPOINT_CB_OK);
+  do {
+    GPR_ASSERT(status == GRPC_ENDPOINT_OP_DONE);
 
-  gpr_mu_lock(&state->mu);
-  current_data = state->read_bytes % 256;
-  read_bytes = count_and_unref_slices(slices, nslices, &current_data);
-  state->read_bytes += read_bytes;
-  gpr_log(GPR_INFO, "Read %d bytes of %d", read_bytes,
-          state->target_read_bytes);
-  if (state->read_bytes >= state->target_read_bytes) {
-    gpr_cv_signal(&state->cv);
-  } else {
-    grpc_endpoint_notify_on_read(state->ep, read_cb, state);
-  }
-  gpr_mu_unlock(&state->mu);
+    gpr_mu_lock(&state->mu);
+    current_data = state->read_bytes % 256;
+    read_bytes = count_and_unref_slices(&state->sb, &current_data);
+    state->read_bytes += read_bytes;
+    gpr_log(GPR_INFO, "Read %d bytes of %d", read_bytes,
+            state->target_read_bytes);
+    if (state->read_bytes >= state->target_read_bytes) {
+      gpr_cv_signal(&state->cv);
+    } else {
+      status = grpc_endpoint_read(state->ep, &state->sb, read_cb, state);
+    }
+    gpr_mu_unlock(&state->mu);
+  } while (status == GRPC_ENDPOINT_OP_DONE);
 }
 
 /* Write to a socket, then read from it using the grpc_tcp API. */
@@ -164,6 +168,7 @@ static void read_test(ssize_t num_bytes, ssize_t slice_size) {
   int sv[2];
   grpc_endpoint *ep;
   struct read_socket_state state;
+  grpc_endpoint_op_status status;
   ssize_t written_bytes;
   gpr_timespec deadline = GRPC_TIMEOUT_SECONDS_TO_DEADLINE(20);
 
@@ -178,11 +183,14 @@ static void read_test(ssize_t num_bytes, ssize_t slice_size) {
 
   gpr_mu_init(&state.mu);
   gpr_cv_init(&state.cv);
+  gpr_slice_buffer_init(&state.sb);
   state.ep = ep;
   state.read_bytes = 0;
   state.target_read_bytes = written_bytes;
 
-  grpc_endpoint_notify_on_read(ep, read_cb, &state);
+  status = grpc_endpoint_read(ep, &state.sb, read_cb, &state);
+  GPR_ASSERT(status != GRPC_ENDPOINT_OP_ERROR);
+  if (status == GRPC_ENDPOINT_OP_DONE) read_cb(&state, status);
 
   gpr_mu_lock(&state.mu);
   for (;;) {
@@ -198,6 +206,7 @@ static void read_test(ssize_t num_bytes, ssize_t slice_size) {
 
   gpr_mu_destroy(&state.mu);
   gpr_cv_destroy(&state.cv);
+  gpr_slice_buffer_destroy(&state.sb);
 }
 
 /* Write to a socket until it fills up, then read from it using the grpc_tcp
@@ -206,6 +215,7 @@ static void large_read_test(ssize_t slice_size) {
   int sv[2];
   grpc_endpoint *ep;
   struct read_socket_state state;
+  grpc_endpoint_op_status status;
   ssize_t written_bytes;
   gpr_timespec deadline = GRPC_TIMEOUT_SECONDS_TO_DEADLINE(20);
 
@@ -219,11 +229,14 @@ static void large_read_test(ssize_t slice_size) {
 
   gpr_mu_init(&state.mu);
   gpr_cv_init(&state.cv);
+  gpr_slice_buffer_init(&state.sb);
   state.ep = ep;
   state.read_bytes = 0;
   state.target_read_bytes = written_bytes;
 
-  grpc_endpoint_notify_on_read(ep, read_cb, &state);
+  status = grpc_endpoint_read(ep, &state.sb, read_cb, &state);
+  GPR_ASSERT(status != GRPC_ENDPOINT_OP_ERROR);
+  if (status == GRPC_ENDPOINT_OP_DONE) read_cb(&state, status);
 
   gpr_mu_lock(&state.mu);
   for (;;) {
@@ -239,6 +252,7 @@ static void large_read_test(ssize_t slice_size) {
 
   gpr_mu_destroy(&state.mu);
   gpr_cv_destroy(&state.cv);
+  gpr_slice_buffer_destroy(&state.sb);
 }
 
 struct write_socket_state {
@@ -272,7 +286,7 @@ static gpr_slice *allocate_blocks(ssize_t num_bytes, ssize_t slice_size,
 }
 
 static void write_done(void *user_data /* write_socket_state */,
-                       grpc_endpoint_cb_status error) {
+                       grpc_endpoint_op_status status) {
   struct write_socket_state *state = (struct write_socket_state *)user_data;
   gpr_log(GPR_INFO, "Write done callback called");
   gpr_mu_lock(&state->mu);
@@ -344,6 +358,7 @@ static void write_test(ssize_t num_bytes, ssize_t slice_size) {
   gpr_slice *slices;
   int current_data = 0;
   gpr_timespec deadline = GRPC_TIMEOUT_SECONDS_TO_DEADLINE(20);
+  gpr_slice_buffer sb;
 
   gpr_log(GPR_INFO, "Start write test with %d bytes, slice size %d", num_bytes,
           slice_size);
@@ -354,13 +369,15 @@ static void write_test(ssize_t num_bytes, ssize_t slice_size) {
 
   gpr_mu_init(&state.mu);
   gpr_cv_init(&state.cv);
+  gpr_slice_buffer_init(&sb);
   state.ep = ep;
   state.write_done = 0;
 
   slices = allocate_blocks(num_bytes, slice_size, &num_blocks, &current_data);
+  gpr_slice_buffer_addn(&sb, slices, num_blocks);
 
-  if (grpc_endpoint_write(ep, slices, num_blocks, write_done, &state) ==
-      GRPC_ENDPOINT_WRITE_DONE) {
+  if (grpc_endpoint_write(ep, &sb, write_done, &state) ==
+      GRPC_ENDPOINT_OP_DONE) {
     /* Write completed immediately */
     read_bytes = drain_socket(sv[0]);
     GPR_ASSERT(read_bytes == num_bytes);
@@ -379,14 +396,15 @@ static void write_test(ssize_t num_bytes, ssize_t slice_size) {
   grpc_endpoint_destroy(ep);
   gpr_mu_destroy(&state.mu);
   gpr_cv_destroy(&state.cv);
+  gpr_slice_buffer_destroy(&sb);
   gpr_free(slices);
 }
 
-static void read_done_for_write_error(void *ud, gpr_slice *slices,
-                                      size_t nslices,
-                                      grpc_endpoint_cb_status error) {
-  GPR_ASSERT(error != GRPC_ENDPOINT_CB_OK);
-  GPR_ASSERT(nslices == 0);
+static void read_done_for_write_error(void *ud,
+                                      grpc_endpoint_op_status status) {
+  gpr_slice_buffer *sb = ud;
+  GPR_ASSERT(status != GRPC_ENDPOINT_OP_DONE);
+  GPR_ASSERT(sb->count == 0);
 }
 
 /* Write to a socket using the grpc_tcp API, then drain it directly.
@@ -400,6 +418,9 @@ static void write_error_test(ssize_t num_bytes, ssize_t slice_size) {
   gpr_slice *slices;
   int current_data = 0;
   gpr_timespec deadline = GRPC_TIMEOUT_SECONDS_TO_DEADLINE(20);
+  gpr_slice_buffer read_sb;
+  gpr_slice_buffer write_sb;
+  grpc_endpoint_op_status status;
 
   gpr_log(GPR_INFO, "Start write error test with %d bytes, slice size %d",
           num_bytes, slice_size);
@@ -411,18 +432,27 @@ static void write_error_test(ssize_t num_bytes, ssize_t slice_size) {
 
   gpr_mu_init(&state.mu);
   gpr_cv_init(&state.cv);
+  gpr_slice_buffer_init(&read_sb);
+  gpr_slice_buffer_init(&write_sb);
   state.ep = ep;
   state.write_done = 0;
 
   slices = allocate_blocks(num_bytes, slice_size, &num_blocks, &current_data);
+  gpr_slice_buffer_addn(&write_sb, slices, num_blocks);
+  free(slices);
 
-  switch (grpc_endpoint_write(ep, slices, num_blocks, write_done, &state)) {
-    case GRPC_ENDPOINT_WRITE_DONE:
-    case GRPC_ENDPOINT_WRITE_ERROR:
+  switch (grpc_endpoint_write(ep, &write_sb, write_done, &state)) {
+    case GRPC_ENDPOINT_OP_DONE:
+    case GRPC_ENDPOINT_OP_ERROR:
       /* Write completed immediately */
       break;
-    case GRPC_ENDPOINT_WRITE_PENDING:
-      grpc_endpoint_notify_on_read(ep, read_done_for_write_error, NULL);
+    case GRPC_ENDPOINT_OP_PENDING:
+      status = grpc_endpoint_read(ep, &read_sb, read_done_for_write_error,
+                                  &read_sb);
+      GPR_ASSERT(status != GRPC_ENDPOINT_OP_ERROR);
+      if (status == GRPC_ENDPOINT_OP_PENDING) {
+        read_done_for_write_error(&read_sb, status);
+      }
       gpr_mu_lock(&state.mu);
       for (;;) {
         if (state.write_done) {
@@ -437,7 +467,8 @@ static void write_error_test(ssize_t num_bytes, ssize_t slice_size) {
   grpc_endpoint_destroy(ep);
   gpr_mu_destroy(&state.mu);
   gpr_cv_destroy(&state.cv);
-  free(slices);
+  gpr_slice_buffer_destroy(&read_sb);
+  gpr_slice_buffer_destroy(&write_sb);
 }
 
 void run_tests(void) {

@@ -69,10 +69,10 @@ static void do_iocp_work() {
   void *opaque = NULL;
   success = GetQueuedCompletionStatus(g_iocp, &bytes,
                                       &completion_key, &overlapped,
-                                      INFINITE);
+                                      1000);
   /* success = 0 and overlapped = NULL means the deadline got attained.
      Which is impossible. since our wait time is +inf */
-  GPR_ASSERT(success || overlapped);
+  if (!success && !overlapped) return;
   GPR_ASSERT(completion_key && overlapped);
   if (overlapped == &g_iocp_custom_overlap) {
     gpr_atm_full_fetch_add(&g_custom_events, -1);

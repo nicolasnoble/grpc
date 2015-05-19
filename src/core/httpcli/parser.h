@@ -37,6 +37,7 @@
 #include "src/core/httpcli/httpcli.h"
 #include <grpc/support/port_platform.h>
 #include <grpc/support/slice.h>
+#include <grpc/support/slice_buffer.h>
 
 typedef enum {
   GRPC_HTTPCLI_INITIAL_RESPONSE,
@@ -58,7 +59,8 @@ typedef struct {
 void grpc_httpcli_parser_init(grpc_httpcli_parser *parser);
 void grpc_httpcli_parser_destroy(grpc_httpcli_parser *parser);
 
-int grpc_httpcli_parser_parse(grpc_httpcli_parser *parser, gpr_slice slice);
+int grpc_httpcli_parser_parse(grpc_httpcli_parser *parser,
+                              gpr_slice_buffer *sb);
 int grpc_httpcli_parser_eof(grpc_httpcli_parser *parser);
 
 #endif  /* GRPC_INTERNAL_CORE_HTTPCLI_PARSER_H */

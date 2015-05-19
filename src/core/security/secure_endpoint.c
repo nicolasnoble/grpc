@@ -49,9 +49,10 @@ typedef struct {
   struct tsi_frame_protector *protector;
   gpr_mu protector_mu;
   /* saved upper level callbacks and user_data. */
-  grpc_endpoint_read_cb read_cb;
+  grpc_endpoint_op_cb read_cb;
   void *read_user_data;
-  grpc_endpoint_write_cb write_cb;
+  gpr_slice_buffer *read_sb;
+  grpc_endpoint_op_cb write_cb;
   void *write_user_data;
   /* saved handshaker leftover data to unprotect. */
   gpr_slice_buffer leftover_bytes;
@@ -96,37 +97,35 @@ static void flush_read_staging_buffer(secure_endpoint *ep, gpr_uint8 **cur,
   *end = GPR_SLICE_END_PTR(ep->read_staging_buffer);
 }
 
-static void call_read_cb(secure_endpoint *ep, gpr_slice *slices, size_t nslices,
-                         grpc_endpoint_cb_status error) {
+static void call_read_cb(secure_endpoint *ep, grpc_endpoint_op_status status) {
   if (grpc_trace_secure_endpoint) {
     size_t i;
-    for (i = 0; i < nslices; i++) {
+    for (i = 0; i < ep->read_sb->count; i++) {
       char *data =
-          gpr_hexdump((char *)GPR_SLICE_START_PTR(slices[i]),
-                      GPR_SLICE_LENGTH(slices[i]), GPR_HEXDUMP_PLAINTEXT);
+          gpr_hexdump((char *)GPR_SLICE_START_PTR(ep->read_sb->slices[i]),
+                      GPR_SLICE_LENGTH(ep->read_sb->slices[i]),
+                      GPR_HEXDUMP_PLAINTEXT);
       gpr_log(GPR_DEBUG, "READ %p: %s", ep, data);
       gpr_free(data);
     }
   }
-  ep->read_cb(ep->read_user_data, slices, nslices, error);
+  ep->read_cb(ep->read_user_data, status);
   secure_endpoint_unref(ep);
 }
 
-static void on_read(void *user_data, gpr_slice *slices, size_t nslices,
-                    grpc_endpoint_cb_status error) {
+static void on_read(void *user_data, grpc_endpoint_op_status status) {
   unsigned i;
   gpr_uint8 keep_looping = 0;
-  int input_buffer_count = 0;
   tsi_result result = TSI_OK;
   secure_endpoint *ep = (secure_endpoint *)user_data;
   gpr_uint8 *cur = GPR_SLICE_START_PTR(ep->read_staging_buffer);
   gpr_uint8 *end = GPR_SLICE_END_PTR(ep->read_staging_buffer);
 
   /* TODO(yangg) check error, maybe bail out early */
-  for (i = 0; i < nslices; i++) {
-    gpr_slice encrypted = slices[i];
-    gpr_uint8 *message_bytes = GPR_SLICE_START_PTR(encrypted);
-    size_t message_size = GPR_SLICE_LENGTH(encrypted);
+  for (i = 0; i < ep->read_sb->count; i++) {
+    gpr_slice *encrypted = &ep->read_sb->slices[i];
+    gpr_uint8 *message_bytes = GPR_SLICE_START_PTR(*encrypted);
+    size_t message_size = GPR_SLICE_LENGTH(*encrypted);
 
     while (message_size > 0 || keep_looping) {
       size_t unprotected_buffer_size_written = end - cur;
@@ -171,38 +170,36 @@ static void on_read(void *user_data, gpr_slice *slices, size_t nslices,
 
   /* TODO(yangg) experiment with moving this block after read_cb to see if it
      helps latency */
-  for (i = 0; i < nslices; i++) {
-    gpr_slice_unref(slices[i]);
-  }
+  gpr_slice_buffer_reset_and_unref(ep->read_sb);
 
   if (result != TSI_OK) {
     gpr_slice_buffer_reset_and_unref(&ep->input_buffer);
-    call_read_cb(ep, NULL, 0, GRPC_ENDPOINT_CB_ERROR);
+    call_read_cb(ep, GRPC_ENDPOINT_OP_ERROR);
     return;
   }
   /* The upper level will unref the slices. */
-  input_buffer_count = ep->input_buffer.count;
-  ep->input_buffer.count = 0;
-  call_read_cb(ep, ep->input_buffer.slices, input_buffer_count, error);
+  gpr_slice_buffer_swap(ep->read_sb, &ep->input_buffer);
+  call_read_cb(ep, status);
 }
 
-static void endpoint_notify_on_read(grpc_endpoint *secure_ep,
-                                    grpc_endpoint_read_cb cb, void *user_data) {
+static grpc_endpoint_op_status endpoint_read(grpc_endpoint *secure_ep,
+                                             gpr_slice_buffer *sb,
+                                             grpc_endpoint_op_cb cb,
+                                             void *user_data) {
   secure_endpoint *ep = (secure_endpoint *)secure_ep;
   ep->read_cb = cb;
   ep->read_user_data = user_data;
+  ep->read_sb = sb;
 
+  GPR_ASSERT(sb->length == 0);
   secure_endpoint_ref(ep);
 
   if (ep->leftover_bytes.count) {
-    size_t leftover_nslices = ep->leftover_bytes.count;
-    ep->leftover_bytes.count = 0;
-    on_read(ep, ep->leftover_bytes.slices, leftover_nslices,
-            GRPC_ENDPOINT_CB_OK);
-    return;
+    gpr_slice_buffer_swap(sb, &ep->leftover_bytes);
+    return GRPC_ENDPOINT_OP_DONE;
   }
 
-  grpc_endpoint_notify_on_read(ep->wrapped_ep, on_read, ep);
+  return grpc_endpoint_read(ep->wrapped_ep, sb, on_read, ep);
 }
 
 static void flush_write_staging_buffer(secure_endpoint *ep, gpr_uint8 **cur,
@@ -213,40 +210,39 @@ static void flush_write_staging_buffer(secure_endpoint *ep, gpr_uint8 **cur,
   *end = GPR_SLICE_END_PTR(ep->write_staging_buffer);
 }
 
-static void on_write(void *data, grpc_endpoint_cb_status error) {
+static void on_write(void *data, grpc_endpoint_op_status status) {
   secure_endpoint *ep = data;
-  ep->write_cb(ep->write_user_data, error);
+  ep->write_cb(ep->write_user_data, status);
   secure_endpoint_unref(ep);
 }
 
-static grpc_endpoint_write_status endpoint_write(grpc_endpoint *secure_ep,
-                                                 gpr_slice *slices,
-                                                 size_t nslices,
-                                                 grpc_endpoint_write_cb cb,
-                                                 void *user_data) {
+static grpc_endpoint_op_status endpoint_write(grpc_endpoint *secure_ep,
+                                              gpr_slice_buffer *sb,
+                                              grpc_endpoint_op_cb cb,
+                                              void *user_data) {
   unsigned i;
-  int output_buffer_count = 0;
   tsi_result result = TSI_OK;
   secure_endpoint *ep = (secure_endpoint *)secure_ep;
   gpr_uint8 *cur = GPR_SLICE_START_PTR(ep->write_staging_buffer);
   gpr_uint8 *end = GPR_SLICE_END_PTR(ep->write_staging_buffer);
-  grpc_endpoint_write_status status;
+  grpc_endpoint_op_status status;
   GPR_ASSERT(ep->output_buffer.count == 0);
 
   if (grpc_trace_secure_endpoint) {
-    for (i = 0; i < nslices; i++) {
+    for (i = 0; i < sb->count; i++) {
       char *data =
-          gpr_hexdump((char *)GPR_SLICE_START_PTR(slices[i]),
-                      GPR_SLICE_LENGTH(slices[i]), GPR_HEXDUMP_PLAINTEXT);
+          gpr_hexdump((char *)GPR_SLICE_START_PTR(sb->slices[i]),
+                      GPR_SLICE_LENGTH(sb->slices[i]),
+                      GPR_HEXDUMP_PLAINTEXT);
       gpr_log(GPR_DEBUG, "WRITE %p: %s", ep, data);
       gpr_free(data);
     }
   }
 
-  for (i = 0; i < nslices; i++) {
-    gpr_slice plain = slices[i];
-    gpr_uint8 *message_bytes = GPR_SLICE_START_PTR(plain);
-    size_t message_size = GPR_SLICE_LENGTH(plain);
+  for (i = 0; i < sb->count; i++) {
+    gpr_slice *plain = &sb->slices[i];
+    gpr_uint8 *message_bytes = GPR_SLICE_START_PTR(*plain);
+    size_t message_size = GPR_SLICE_LENGTH(*plain);
     while (message_size > 0) {
       size_t protected_buffer_size_to_send = end - cur;
       size_t processed_message_size = message_size;
@@ -294,26 +290,21 @@ static grpc_endpoint_write_status endpoint_write(grpc_endpoint *secure_ep,
     }
   }
 
-  for (i = 0; i < nslices; i++) {
-    gpr_slice_unref(slices[i]);
-  }
+  gpr_slice_buffer_reset_and_unref(sb);
 
   if (result != TSI_OK) {
     /* TODO(yangg) do different things according to the error type? */
     gpr_slice_buffer_reset_and_unref(&ep->output_buffer);
-    return GRPC_ENDPOINT_WRITE_ERROR;
+    return GRPC_ENDPOINT_OP_ERROR;
   }
 
-  /* clear output_buffer and let the lower level handle its slices. */
-  output_buffer_count = ep->output_buffer.count;
-  ep->output_buffer.count = 0;
   ep->write_cb = cb;
   ep->write_user_data = user_data;
   /* Need to keep the endpoint alive across a transport */
   secure_endpoint_ref(ep);
-  status = grpc_endpoint_write(ep->wrapped_ep, ep->output_buffer.slices,
-                               output_buffer_count, on_write, ep);
-  if (status != GRPC_ENDPOINT_WRITE_PENDING) {
+  status = grpc_endpoint_write(ep->wrapped_ep, &ep->output_buffer,
+                               on_write, ep);
+  if (status != GRPC_ENDPOINT_OP_PENDING) {
     secure_endpoint_unref(ep);
   }
   return status;
@@ -336,7 +327,7 @@ static void endpoint_add_to_pollset(grpc_endpoint *secure_ep,
 }
 
 static const grpc_endpoint_vtable vtable = {
-    endpoint_notify_on_read, endpoint_write, endpoint_add_to_pollset,
+    endpoint_read, endpoint_write, endpoint_add_to_pollset,
     endpoint_shutdown, endpoint_unref};
 
 grpc_endpoint *grpc_secure_endpoint_create(

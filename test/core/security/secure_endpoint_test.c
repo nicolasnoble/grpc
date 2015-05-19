@@ -131,27 +131,37 @@ static grpc_endpoint_test_config configs[] = {
      secure_endpoint_create_fixture_tcp_socketpair_leftover, clean_up},
 };
 
-static void verify_leftover(void *user_data, gpr_slice *slices, size_t nslices,
-                            grpc_endpoint_cb_status error) {
+typedef struct {
+  int verified;
+  gpr_slice_buffer sb;
+} leftover_info;
+
+static void verify_leftover(void *user_data, grpc_endpoint_op_status status) {
+  leftover_info *info = (leftover_info *) user_data;
   gpr_slice s =
       gpr_slice_from_copied_string("hello world 12345678900987654321");
 
-  GPR_ASSERT(error == GRPC_ENDPOINT_CB_OK);
-  GPR_ASSERT(nslices == 1);
+  GPR_ASSERT(status == GRPC_ENDPOINT_OP_DONE);
+  GPR_ASSERT(info->sb.count == 1);
 
-  GPR_ASSERT(0 == gpr_slice_cmp(s, slices[0]));
-  gpr_slice_unref(slices[0]);
+  GPR_ASSERT(0 == gpr_slice_cmp(s, info->sb.slices[0]));
   gpr_slice_unref(s);
-  *(int *)user_data = 1;
+  info->verified = 1;
 }
 
 static void test_leftover(grpc_endpoint_test_config config, size_t slice_size) {
   grpc_endpoint_test_fixture f = config.create_fixture(slice_size);
-  int verified = 0;
+  leftover_info info;
+  grpc_endpoint_op_status status;
   gpr_log(GPR_INFO, "Start test left over");
 
-  grpc_endpoint_notify_on_read(f.client_ep, verify_leftover, &verified);
-  GPR_ASSERT(verified == 1);
+  info.verified = 0;
+  gpr_slice_buffer_init(&info.sb);
+  status = grpc_endpoint_read(f.client_ep, &info.sb, verify_leftover, &info);
+  GPR_ASSERT(status == GRPC_ENDPOINT_OP_DONE);
+  verify_leftover(&info, status);
+  GPR_ASSERT(info.verified == 1);
+  gpr_slice_buffer_destroy(&info.sb);
 
   grpc_endpoint_shutdown(f.client_ep);
   grpc_endpoint_shutdown(f.server_ep);
@@ -160,20 +170,27 @@ static void test_leftover(grpc_endpoint_test_config config, size_t slice_size) {
   clean_up();
 }
 
-static void destroy_early(void *user_data, gpr_slice *slices, size_t nslices,
-                          grpc_endpoint_cb_status error) {
-  grpc_endpoint_test_fixture *f = user_data;
+typedef struct {
+  grpc_endpoint_test_fixture *f;
+  gpr_slice_buffer *sb;
+} destroy_early_info;
+
+static void destroy_early(void *user_data,
+                          grpc_endpoint_op_status status) {
+  destroy_early_info *info = user_data;
+  grpc_endpoint_test_fixture *f = info->f;
+  gpr_slice *slices = info->sb->slices;
+  size_t nslices = info->sb->count;
   gpr_slice s =
       gpr_slice_from_copied_string("hello world 12345678900987654321");
 
-  GPR_ASSERT(error == GRPC_ENDPOINT_CB_OK);
+  GPR_ASSERT(status == GRPC_ENDPOINT_OP_DONE);
   GPR_ASSERT(nslices == 1);
 
   grpc_endpoint_shutdown(f->client_ep);
   grpc_endpoint_destroy(f->client_ep);
 
   GPR_ASSERT(0 == gpr_slice_cmp(s, slices[0]));
-  gpr_slice_unref(slices[0]);
   gpr_slice_unref(s);
 }
 
@@ -181,10 +198,19 @@ static void destroy_early(void *user_data, gpr_slice *slices, size_t nslices,
 static void test_destroy_ep_early(grpc_endpoint_test_config config,
                                   size_t slice_size) {
   grpc_endpoint_test_fixture f = config.create_fixture(slice_size);
+  gpr_slice_buffer sb;
+  destroy_early_info info;
+  grpc_endpoint_op_status status;
   gpr_log(GPR_INFO, "Start test destroy early");
 
-  grpc_endpoint_notify_on_read(f.client_ep, destroy_early, &f);
+  gpr_slice_buffer_init(&sb);
+  info.sb = &sb;
+  info.f = &f;
+  status = grpc_endpoint_read(f.client_ep, &sb, destroy_early, &info);
+  GPR_ASSERT(status != GRPC_ENDPOINT_OP_ERROR);
+  if (status == GRPC_ENDPOINT_OP_DONE) destroy_early(&info, status);
 
+  gpr_slice_buffer_destroy(&sb);
   grpc_endpoint_shutdown(f.server_ep);
   grpc_endpoint_destroy(f.server_ep);
   clean_up();

@@ -197,12 +197,16 @@ void grpc_httpcli_parser_destroy(grpc_httpcli_parser *parser) {
   gpr_free(parser->r.hdrs);
 }
 
-int grpc_httpcli_parser_parse(grpc_httpcli_parser *parser, gpr_slice slice) {
+int grpc_httpcli_parser_parse(grpc_httpcli_parser *parser,
+                              gpr_slice_buffer *sb) {
   size_t i;
+  size_t s;
 
-  for (i = 0; i < GPR_SLICE_LENGTH(slice); i++) {
-    if (!addbyte(parser, GPR_SLICE_START_PTR(slice)[i])) {
-      return 0;
+  for (s = 0; s < sb->count; s++) {
+    for (i = 0; i < GPR_SLICE_LENGTH(sb->slices[s]); i++) {
+      if (!addbyte(parser, GPR_SLICE_START_PTR(sb->slices[s])[i])) {
+        return 0;
+      }
     }
   }
 

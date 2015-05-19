@@ -53,6 +53,8 @@ typedef struct {
   grpc_resolved_addresses *addresses;
   size_t next_address;
   grpc_endpoint *ep;
+  gpr_slice_buffer read_sb;
+  gpr_slice_buffer write_sb;
   char *host;
   gpr_timespec deadline;
   int have_read_byte;
@@ -77,79 +79,82 @@ static void finish(internal_request *req, int success) {
     grpc_endpoint_destroy(req->ep);
   }
   gpr_slice_unref(req->request_text);
+  gpr_slice_buffer_destroy(&req->read_sb);
+  gpr_slice_buffer_destroy(&req->write_sb);
   gpr_free(req->host);
   gpr_free(req);
 }
 
-static void on_read(void *user_data, gpr_slice *slices, size_t nslices,
-                    grpc_endpoint_cb_status status) {
+static void on_read(void *user_data,
+                    grpc_endpoint_op_status status) {
   internal_request *req = user_data;
-  size_t i;
 
-  gpr_log(GPR_DEBUG, "%s nslices=%d status=%d", __FUNCTION__, nslices, status);
+  do {
+    int parse_failed = 0;
+    gpr_log(GPR_DEBUG, "%s status=%d", __FUNCTION__, status);
 
-  for (i = 0; i < nslices; i++) {
-    if (GPR_SLICE_LENGTH(slices[i])) {
-      req->have_read_byte = 1;
-      if (!grpc_httpcli_parser_parse(&req->parser, slices[i])) {
-        finish(req, 0);
-        goto done;
-      }
+    if (req->read_sb.length != 0) req->have_read_byte = 1;
+    if (!grpc_httpcli_parser_parse(&req->parser, &req->read_sb)) {
+      parse_failed = 1;
+      status = GRPC_ENDPOINT_OP_ERROR;
     }
-  }
 
-  switch (status) {
-    case GRPC_ENDPOINT_CB_OK:
-      grpc_endpoint_notify_on_read(req->ep, on_read, req);
-      break;
-    case GRPC_ENDPOINT_CB_EOF:
-    case GRPC_ENDPOINT_CB_ERROR:
-    case GRPC_ENDPOINT_CB_SHUTDOWN:
-      if (!req->have_read_byte) {
-        next_address(req);
-      } else {
-        finish(req, grpc_httpcli_parser_eof(&req->parser));
-      }
-      break;
-  }
+    gpr_slice_buffer_reset_and_unref(&req->read_sb);
 
-done:
-  for (i = 0; i < nslices; i++) {
-    gpr_slice_unref(slices[i]);
-  }
+    switch (status) {
+      case GRPC_ENDPOINT_OP_PENDING:
+        abort();
+        break;
+      case GRPC_ENDPOINT_OP_DONE:
+        status = grpc_endpoint_read(req->ep, &req->read_sb, on_read, req);
+        break;
+      case GRPC_ENDPOINT_OP_ERROR:
+        if (!req->have_read_byte && !parse_failed) {
+          next_address(req);
+        } else {
+          finish(req, parse_failed ? 0 : grpc_httpcli_parser_eof(&req->parser));
+        }
+        break;
+    }
+  } while (status != GRPC_ENDPOINT_OP_PENDING);
 }
 
 static void on_written(internal_request *req) {
+  grpc_endpoint_op_status status;
   gpr_log(GPR_DEBUG, "%s", __FUNCTION__);
-  grpc_endpoint_notify_on_read(req->ep, on_read, req);
+  status = grpc_endpoint_read(req->ep, &req->read_sb, on_read, req);
+  if (status != GRPC_ENDPOINT_OP_PENDING) on_read(req, status);
 }
 
-static void done_write(void *arg, grpc_endpoint_cb_status status) {
+static void done_write(void *arg, grpc_endpoint_op_status status) {
   internal_request *req = arg;
   gpr_log(GPR_DEBUG, "%s", __FUNCTION__);
   switch (status) {
-    case GRPC_ENDPOINT_CB_OK:
+    case GRPC_ENDPOINT_OP_PENDING:
+      abort();
+      break;
+    case GRPC_ENDPOINT_OP_DONE:
       on_written(req);
       break;
-    case GRPC_ENDPOINT_CB_EOF:
-    case GRPC_ENDPOINT_CB_SHUTDOWN:
-    case GRPC_ENDPOINT_CB_ERROR:
+    case GRPC_ENDPOINT_OP_ERROR:
       next_address(req);
       break;
   }
 }
 
 static void start_write(internal_request *req) {
+  grpc_endpoint_op_status status;
   gpr_slice_ref(req->request_text);
   gpr_log(GPR_DEBUG, "%s", __FUNCTION__);
-  switch (
-      grpc_endpoint_write(req->ep, &req->request_text, 1, done_write, req)) {
-    case GRPC_ENDPOINT_WRITE_DONE:
+  gpr_slice_buffer_add(&req->write_sb, req->request_text);
+  status = grpc_endpoint_write(req->ep, &req->write_sb, done_write, req);
+  switch (status) {
+    case GRPC_ENDPOINT_OP_DONE:
       on_written(req);
       break;
-    case GRPC_ENDPOINT_WRITE_PENDING:
+    case GRPC_ENDPOINT_OP_PENDING:
       break;
-    case GRPC_ENDPOINT_WRITE_ERROR:
+    case GRPC_ENDPOINT_OP_ERROR:
       finish(req, 0);
       break;
   }
@@ -264,6 +269,8 @@ void grpc_httpcli_post(const grpc_httpcli_request *request,
   req->user_data = user_data;
   req->deadline = deadline;
   req->use_ssl = request->use_ssl;
+  gpr_slice_buffer_init(&req->read_sb);
+  gpr_slice_buffer_init(&req->write_sb);
   if (req->use_ssl) {
     req->host = gpr_strdup(request->host);
   }

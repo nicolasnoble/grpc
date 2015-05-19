@@ -288,6 +288,7 @@ struct transport {
                                     grpc_chttp2_parse_state *state,
                                     gpr_slice slice, int is_last);
 
+  gpr_slice_buffer inbuf;
   gpr_slice_buffer outbuf;
   gpr_slice_buffer qbuf;
 
@@ -381,8 +382,7 @@ static void maybe_start_some_streams(transport *t);
 
 static void become_skip_parser(transport *t);
 
-static void recv_data(void *tp, gpr_slice *slices, size_t nslices,
-                      grpc_endpoint_cb_status error);
+static void recv_data(void *tp, grpc_endpoint_op_status status);
 
 static void schedule_cb(transport *t, op_closure closure, int success);
 static void maybe_finish_read(transport *t, stream *s);
@@ -409,6 +409,7 @@ static void destruct_transport(transport *t) {
 
   GPR_ASSERT(t->ep == NULL);
 
+  gpr_slice_buffer_destroy(&t->inbuf);
   gpr_slice_buffer_destroy(&t->outbuf);
   gpr_slice_buffer_destroy(&t->qbuf);
   grpc_chttp2_hpack_parser_destroy(&t->hpack_parser);
@@ -492,6 +493,7 @@ static void init_transport(transport *t, grpc_transport_setup_callback setup,
   t->ping_counter = gpr_now().tv_nsec;
   grpc_chttp2_hpack_compressor_init(&t->hpack_compressor, mdctx);
   grpc_chttp2_goaway_parser_init(&t->goaway_parser);
+  gpr_slice_buffer_init(&t->inbuf);
   gpr_slice_buffer_init(&t->outbuf);
   gpr_slice_buffer_init(&t->qbuf);
   grpc_sopb_init(&t->nuke_later_sopb);
@@ -572,7 +574,8 @@ static void init_transport(transport *t, grpc_transport_setup_callback setup,
   unlock(t);
 
   ref_transport(t); /* matches unref inside recv_data */
-  recv_data(t, slices, nslices, GRPC_ENDPOINT_CB_OK);
+  gpr_slice_buffer_addn(&t->inbuf, slices, nslices);
+  recv_data(t, GRPC_ENDPOINT_OP_DONE);
 
   unref_transport(t);
 }
@@ -1021,9 +1024,9 @@ static void finish_write_common(transport *t, int success) {
   unref_transport(t);
 }
 
-static void finish_write(void *tp, grpc_endpoint_cb_status error) {
+static void finish_write(void *tp, grpc_endpoint_op_status status) {
   transport *t = tp;
-  finish_write_common(t, error == GRPC_ENDPOINT_CB_OK);
+  finish_write_common(t, status == GRPC_ENDPOINT_OP_DONE);
 }
 
 static void perform_write(transport *t, grpc_endpoint *ep) {
@@ -1031,15 +1034,15 @@ static void perform_write(transport *t, grpc_endpoint *ep) {
 
   GPR_ASSERT(t->outbuf.count > 0);
 
-  switch (grpc_endpoint_write(ep, t->outbuf.slices, t->outbuf.count,
+  switch (grpc_endpoint_write(ep, &t->outbuf,
                               finish_write, t)) {
-    case GRPC_ENDPOINT_WRITE_DONE:
+    case GRPC_ENDPOINT_OP_DONE:
       finish_write_common(t, 1);
       break;
-    case GRPC_ENDPOINT_WRITE_ERROR:
+    case GRPC_ENDPOINT_OP_ERROR:
       finish_write_common(t, 0);
       break;
-    case GRPC_ENDPOINT_WRITE_PENDING:
+    case GRPC_ENDPOINT_OP_PENDING:
       break;
   }
 }
@@ -1904,43 +1907,47 @@ static int process_read(transport *t, gpr_slice slice) {
 }
 
 /* tcp read callback */
-static void recv_data(void *tp, gpr_slice *slices, size_t nslices,
-                      grpc_endpoint_cb_status error) {
+static void recv_data(void *tp, grpc_endpoint_op_status status) {
   transport *t = tp;
   size_t i;
-  int keep_reading = 0;
+  int keep_reading;
 
-  switch (error) {
-    case GRPC_ENDPOINT_CB_SHUTDOWN:
-    case GRPC_ENDPOINT_CB_EOF:
-    case GRPC_ENDPOINT_CB_ERROR:
-      lock(t);
-      drop_connection(t);
-      t->reading = 0;
-      if (!t->writing && t->ep) {
-        grpc_endpoint_destroy(t->ep);
-        t->ep = NULL;
-        unref_transport(t); /* safe as we still have a ref for read */
-      }
-      unlock(t);
-      unref_transport(t);
-      break;
-    case GRPC_ENDPOINT_CB_OK:
-      lock(t);
-      if (t->cb) {
-        for (i = 0; i < nslices && process_read(t, slices[i]); i++)
-          ;
-      }
-      unlock(t);
-      keep_reading = 1;
-      break;
-  }
+  do {
+    keep_reading = 0;
+    switch (status) {
+      case GRPC_ENDPOINT_OP_ERROR:
+        lock(t);
+        drop_connection(t);
+        t->reading = 0;
+        if (!t->writing && t->ep) {
+          grpc_endpoint_destroy(t->ep);
+          t->ep = NULL;
+          unref_transport(t); /* safe as we still have a ref for read */
+        }
+        unlock(t);
+        unref_transport(t);
+        break;
+      case GRPC_ENDPOINT_OP_DONE:
+        lock(t);
+        if (t->cb) {
+          size_t nslices = t->inbuf.count;
+          gpr_slice *slices = t->inbuf.slices;
+          for (i = 0; i < nslices && process_read(t, slices[i]); i++)
+            ;
+        }
+        unlock(t);
+        keep_reading = 1;
+        break;
+      case GRPC_ENDPOINT_OP_PENDING:
+        return;
+    }
 
-  for (i = 0; i < nslices; i++) gpr_slice_unref(slices[i]);
+    gpr_slice_buffer_reset_and_unref(&t->inbuf);
 
-  if (keep_reading) {
-    grpc_endpoint_notify_on_read(t->ep, recv_data, t);
-  }
+    if (keep_reading) {
+      status = grpc_endpoint_read(t->ep, &t->inbuf, recv_data, t);
+    }
+  } while (keep_reading);
 }
 
 /*
