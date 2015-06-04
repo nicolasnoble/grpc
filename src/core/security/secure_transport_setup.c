@@ -55,10 +55,10 @@ typedef struct {
 
 static void on_handshake_data_received_from_peer(void *setup, gpr_slice *slices,
                                                  size_t nslices,
-                                                 grpc_endpoint_cb_status error);
+                                                 grpc_endpoint_op_status status);
 
 static void on_handshake_data_sent_to_peer(void *setup,
-                                           grpc_endpoint_cb_status error);
+                                           grpc_endpoint_op_status status);
 
 static void secure_transport_setup_done(grpc_secure_transport_setup *s,
                                         int is_success) {
@@ -127,7 +127,7 @@ static void send_handshake_bytes_to_peer(grpc_secure_transport_setup *s) {
   size_t offset = 0;
   tsi_result result = TSI_OK;
   gpr_slice to_send;
-  grpc_endpoint_write_status write_status;
+  grpc_endpoint_op_status write_status;
 
   do {
     size_t to_send_size = s->handshake_buffer_size - offset;
@@ -154,11 +154,11 @@ static void send_handshake_bytes_to_peer(grpc_secure_transport_setup *s) {
          deadline */
   write_status = grpc_endpoint_write(s->endpoint, &to_send, 1,
                                      on_handshake_data_sent_to_peer, s);
-  if (write_status == GRPC_ENDPOINT_WRITE_ERROR) {
+  if (write_status == GRPC_ENDPOINT_OP_ERROR) {
     gpr_log(GPR_ERROR, "Could not send handshake data to peer.");
     secure_transport_setup_done(s, 0);
-  } else if (write_status == GRPC_ENDPOINT_WRITE_DONE) {
-    on_handshake_data_sent_to_peer(s, GRPC_ENDPOINT_CB_OK);
+  } else if (write_status == GRPC_ENDPOINT_OP_DONE) {
+    on_handshake_data_sent_to_peer(s, GRPC_ENDPOINT_OP_DONE);
   }
 }
 
@@ -171,7 +171,7 @@ static void cleanup_slices(gpr_slice *slices, size_t num_slices) {
 
 static void on_handshake_data_received_from_peer(
     void *setup, gpr_slice *slices, size_t nslices,
-    grpc_endpoint_cb_status error) {
+    grpc_endpoint_op_status status) {
   grpc_secure_transport_setup *s = setup;
   size_t consumed_slice_size = 0;
   tsi_result result = TSI_OK;
@@ -179,7 +179,7 @@ static void on_handshake_data_received_from_peer(
   size_t num_left_overs;
   int has_left_overs_in_current_slice = 0;
 
-  if (error != GRPC_ENDPOINT_CB_OK) {
+  if (status != GRPC_ENDPOINT_OP_DONE) {
     gpr_log(GPR_ERROR, "Read failed.");
     cleanup_slices(slices, nslices);
     secure_transport_setup_done(s, 0);
@@ -198,8 +198,10 @@ static void on_handshake_data_received_from_peer(
     if (result == TSI_INCOMPLETE_DATA) {
       /* TODO(klempner,jboeuf): This should probably use the client setup
          deadline */
-      grpc_endpoint_notify_on_read(s->endpoint,
-                                   on_handshake_data_received_from_peer, setup);
+      status = grpc_endpoint_read(s->endpoint,
+                                  on_handshake_data_received_from_peer,
+                                  setup);
+      GPR_ASSERT(status == GRPC_ENDPOINT_OP_PENDING);
       cleanup_slices(slices, nslices);
       return;
     } else {
@@ -241,12 +243,12 @@ static void on_handshake_data_received_from_peer(
 
 /* If setup is NULL, the setup is done. */
 static void on_handshake_data_sent_to_peer(void *setup,
-                                           grpc_endpoint_cb_status error) {
+                                           grpc_endpoint_op_status status) {
   grpc_secure_transport_setup *s = setup;
 
   /* Make sure that write is OK. */
-  if (error != GRPC_ENDPOINT_CB_OK) {
-    gpr_log(GPR_ERROR, "Write failed with error %d.", error);
+  if (status != GRPC_ENDPOINT_OP_DONE) {
+    gpr_log(GPR_ERROR, "Write failed with error %d.", status);
     if (setup != NULL) secure_transport_setup_done(s, 0);
     return;
   }
@@ -255,8 +257,9 @@ static void on_handshake_data_sent_to_peer(void *setup,
   if (tsi_handshaker_is_in_progress(s->handshaker)) {
     /* TODO(klempner,jboeuf): This should probably use the client setup
        deadline */
-    grpc_endpoint_notify_on_read(s->endpoint,
-                                 on_handshake_data_received_from_peer, setup);
+    status = grpc_endpoint_read(s->endpoint,
+                                on_handshake_data_received_from_peer, setup);
+    GPR_ASSERT(status == GRPC_ENDPOINT_OP_PENDING);
   } else {
     check_peer(s);
   }

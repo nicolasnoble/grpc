@@ -125,10 +125,9 @@ struct read_and_write_test_state {
 
 static void read_and_write_test_read_handler(void *data, gpr_slice *slices,
                                              size_t nslices,
-                                             grpc_endpoint_cb_status error) {
+                                             grpc_endpoint_op_status status) {
   struct read_and_write_test_state *state = data;
-  GPR_ASSERT(error != GRPC_ENDPOINT_CB_ERROR);
-  if (error == GRPC_ENDPOINT_CB_SHUTDOWN) {
+  if (status == GRPC_ENDPOINT_OP_ERROR) {
     gpr_log(GPR_INFO, "Read handler shutdown");
     gpr_mu_lock(&state->mu);
     state->read_done = 1;
@@ -146,23 +145,22 @@ static void read_and_write_test_read_handler(void *data, gpr_slice *slices,
     gpr_cv_signal(&state->cv);
     gpr_mu_unlock(&state->mu);
   } else {
-    grpc_endpoint_notify_on_read(state->read_ep,
-                                 read_and_write_test_read_handler, data);
+    status = grpc_endpoint_read(state->read_ep,
+                                read_and_write_test_read_handler, data);
+    GPR_ASSERT(status == GRPC_ENDPOINT_OP_PENDING);
   }
 }
 
 static void read_and_write_test_write_handler(void *data,
-                                              grpc_endpoint_cb_status error) {
+                                              grpc_endpoint_op_status status) {
   struct read_and_write_test_state *state = data;
   gpr_slice *slices = NULL;
   size_t nslices;
-  grpc_endpoint_write_status write_status;
+  grpc_endpoint_op_status write_status;
 
-  GPR_ASSERT(error != GRPC_ENDPOINT_CB_ERROR);
+  gpr_log(GPR_DEBUG, "%s: status=%d", "read_and_write_test_write_handler", status);
 
-  gpr_log(GPR_DEBUG, "%s: error=%d", "read_and_write_test_write_handler", error);
-
-  if (error == GRPC_ENDPOINT_CB_SHUTDOWN) {
+  if (status == GRPC_ENDPOINT_OP_ERROR) {
     gpr_log(GPR_INFO, "Write handler shutdown");
     gpr_mu_lock(&state->mu);
     state->write_done = 1;
@@ -189,9 +187,9 @@ static void read_and_write_test_write_handler(void *data,
         grpc_endpoint_write(state->write_ep, slices, nslices,
                             read_and_write_test_write_handler, state);
     gpr_log(GPR_DEBUG, "write_status=%d", write_status);
-    GPR_ASSERT(write_status != GRPC_ENDPOINT_WRITE_ERROR);
+    GPR_ASSERT(write_status != GRPC_ENDPOINT_OP_ERROR);
     free(slices);
-    if (write_status == GRPC_ENDPOINT_WRITE_PENDING) {
+    if (write_status == GRPC_ENDPOINT_OP_PENDING) {
       return;
     }
   }
@@ -212,6 +210,7 @@ static void read_and_write_test(grpc_endpoint_test_config config,
                                 size_t num_bytes, size_t write_size,
                                 size_t slice_size, int shutdown) {
   struct read_and_write_test_state state;
+  grpc_endpoint_op_status status;
   gpr_timespec deadline = GRPC_TIMEOUT_SECONDS_TO_DEADLINE(20);
   grpc_endpoint_test_fixture f = begin_test(config, "read_and_write_test", slice_size);
 
@@ -241,10 +240,11 @@ static void read_and_write_test(grpc_endpoint_test_config config,
      for the first iteration as for later iterations. It does the right thing
      even when bytes_written is unsigned. */
   state.bytes_written -= state.current_write_size;
-  read_and_write_test_write_handler(&state, GRPC_ENDPOINT_CB_OK);
+  read_and_write_test_write_handler(&state, GRPC_ENDPOINT_OP_DONE);
 
-  grpc_endpoint_notify_on_read(state.read_ep, read_and_write_test_read_handler,
-                               &state);
+  status = grpc_endpoint_read(state.read_ep, read_and_write_test_read_handler,
+                              &state);
+  GPR_ASSERT(status == GRPC_ENDPOINT_OP_PENDING);
 
   if (shutdown) {
     gpr_log(GPR_DEBUG, "shutdown read");
@@ -281,7 +281,7 @@ typedef struct {
 
 static void shutdown_during_write_test_read_handler(
     void *user_data, gpr_slice *slices, size_t nslices,
-    grpc_endpoint_cb_status error) {
+    grpc_endpoint_op_status status) {
   size_t i;
   shutdown_during_write_test_state *st = user_data;
 
@@ -289,21 +289,22 @@ static void shutdown_during_write_test_read_handler(
     gpr_slice_unref(slices[i]);
   }
 
-  if (error != GRPC_ENDPOINT_CB_OK) {
+  if (status != GRPC_ENDPOINT_OP_DONE) {
     grpc_endpoint_destroy(st->ep);
-    gpr_event_set(&st->ev, (void *)(gpr_intptr) error);
+    gpr_event_set(&st->ev, (void *)(gpr_intptr) status);
   } else {
-    grpc_endpoint_notify_on_read(
+    status = grpc_endpoint_read(
         st->ep, shutdown_during_write_test_read_handler, user_data);
+    GPR_ASSERT(status == GRPC_ENDPOINT_OP_PENDING);
   }
 }
 
 static void shutdown_during_write_test_write_handler(
-    void *user_data, grpc_endpoint_cb_status error) {
+    void *user_data, grpc_endpoint_op_status status) {
   shutdown_during_write_test_state *st = user_data;
   gpr_log(GPR_INFO, "shutdown_during_write_test_write_handler: error = %d",
-          error);
-  if (error == 0) {
+          status);
+  if (status == GRPC_ENDPOINT_OP_DONE) {
     /* This happens about 0.5% of the time when run under TSAN, and is entirely
        legitimate, but means we aren't testing the path we think we are. */
     /* TODO(klempner): Change this test to retry the write in that case */
@@ -322,6 +323,7 @@ static void shutdown_during_write_test(grpc_endpoint_test_config config,
   int current_data = 1;
   shutdown_during_write_test_state read_st;
   shutdown_during_write_test_state write_st;
+  grpc_endpoint_op_status status;
   gpr_slice *slices;
   grpc_endpoint_test_fixture f = begin_test(config, "shutdown_during_write_test", slice_size);
 
@@ -332,19 +334,20 @@ static void shutdown_during_write_test(grpc_endpoint_test_config config,
   gpr_event_init(&read_st.ev);
   gpr_event_init(&write_st.ev);
 
-  grpc_endpoint_notify_on_read(
+  status = grpc_endpoint_read(
       read_st.ep, shutdown_during_write_test_read_handler, &read_st);
+  GPR_ASSERT(status == GRPC_ENDPOINT_OP_PENDING);
   for (size = 1;; size *= 2) {
     slices = allocate_blocks(size, 1, &nblocks, &current_data);
     switch (grpc_endpoint_write(write_st.ep, slices, nblocks,
                                 shutdown_during_write_test_write_handler,
                                 &write_st)) {
-      case GRPC_ENDPOINT_WRITE_DONE:
+      case GRPC_ENDPOINT_OP_DONE:
         break;
-      case GRPC_ENDPOINT_WRITE_ERROR:
+      case GRPC_ENDPOINT_OP_ERROR:
         gpr_log(GPR_ERROR, "error writing");
         abort();
-      case GRPC_ENDPOINT_WRITE_PENDING:
+      case GRPC_ENDPOINT_OP_PENDING:
         grpc_endpoint_shutdown(write_st.ep);
         deadline = GRPC_TIMEOUT_SECONDS_TO_DEADLINE(10);
         GPR_ASSERT(gpr_event_wait(&write_st.ev, deadline));

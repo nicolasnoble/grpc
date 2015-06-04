@@ -539,6 +539,7 @@ if forever:
     jobset.message('IDLE', 'No change detected')
     while not have_files_changed():
       time.sleep(1)
+    sys.stdout.write('\x1b[H\x1b[2J')
 else:
   result = _build_and_run(check_cancelled=lambda: False,
                           newline_on_success=args.newline_on_success,

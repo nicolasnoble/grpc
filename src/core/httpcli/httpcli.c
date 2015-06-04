@@ -81,7 +81,7 @@ static void finish(internal_request *req, int success) {
 }
 
 static void on_read(void *user_data, gpr_slice *slices, size_t nslices,
-                    grpc_endpoint_cb_status status) {
+                    grpc_endpoint_op_status status) {
   internal_request *req = user_data;
   size_t i;
 
@@ -96,18 +96,19 @@ static void on_read(void *user_data, gpr_slice *slices, size_t nslices,
   }
 
   switch (status) {
-    case GRPC_ENDPOINT_CB_OK:
-      grpc_endpoint_notify_on_read(req->ep, on_read, req);
+    case GRPC_ENDPOINT_OP_DONE:
+      status = grpc_endpoint_read(req->ep, on_read, req);
+      GPR_ASSERT(status == GRPC_ENDPOINT_OP_PENDING);
       break;
-    case GRPC_ENDPOINT_CB_EOF:
-    case GRPC_ENDPOINT_CB_ERROR:
-    case GRPC_ENDPOINT_CB_SHUTDOWN:
+    case GRPC_ENDPOINT_OP_ERROR:
       if (!req->have_read_byte) {
         next_address(req);
       } else {
         finish(req, grpc_httpcli_parser_eof(&req->parser));
       }
       break;
+    case GRPC_ENDPOINT_OP_PENDING:
+      abort();
   }
 
 done:
@@ -117,20 +118,22 @@ done:
 }
 
 static void on_written(internal_request *req) {
-  grpc_endpoint_notify_on_read(req->ep, on_read, req);
+  grpc_endpoint_op_status status;
+  status = grpc_endpoint_read(req->ep, on_read, req);
+  GPR_ASSERT(status == GRPC_ENDPOINT_OP_PENDING);
 }
 
-static void done_write(void *arg, grpc_endpoint_cb_status status) {
+static void done_write(void *arg, grpc_endpoint_op_status status) {
   internal_request *req = arg;
   switch (status) {
-    case GRPC_ENDPOINT_CB_OK:
+    case GRPC_ENDPOINT_OP_DONE:
       on_written(req);
       break;
-    case GRPC_ENDPOINT_CB_EOF:
-    case GRPC_ENDPOINT_CB_SHUTDOWN:
-    case GRPC_ENDPOINT_CB_ERROR:
+    case GRPC_ENDPOINT_OP_ERROR:
       next_address(req);
       break;
+    case GRPC_ENDPOINT_OP_PENDING:
+      abort();
   }
 }
 
@@ -138,12 +141,12 @@ static void start_write(internal_request *req) {
   gpr_slice_ref(req->request_text);
   switch (
       grpc_endpoint_write(req->ep, &req->request_text, 1, done_write, req)) {
-    case GRPC_ENDPOINT_WRITE_DONE:
+    case GRPC_ENDPOINT_OP_DONE:
       on_written(req);
       break;
-    case GRPC_ENDPOINT_WRITE_PENDING:
+    case GRPC_ENDPOINT_OP_PENDING:
       break;
-    case GRPC_ENDPOINT_WRITE_ERROR:
+    case GRPC_ENDPOINT_OP_ERROR:
       finish(req, 0);
       break;
   }

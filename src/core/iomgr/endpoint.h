@@ -44,39 +44,34 @@
 typedef struct grpc_endpoint grpc_endpoint;
 typedef struct grpc_endpoint_vtable grpc_endpoint_vtable;
 
-typedef enum grpc_endpoint_cb_status {
-  GRPC_ENDPOINT_CB_OK = 0, /* Call completed successfully */
-  GRPC_ENDPOINT_CB_EOF, /* Call completed successfully, end of file reached */
-  GRPC_ENDPOINT_CB_SHUTDOWN, /* Call interrupted by shutdown */
-  GRPC_ENDPOINT_CB_ERROR     /* Call interrupted by socket error */
-} grpc_endpoint_cb_status;
-
-typedef enum grpc_endpoint_write_status {
-  GRPC_ENDPOINT_WRITE_DONE,    /* completed immediately, cb won't be called */
-  GRPC_ENDPOINT_WRITE_PENDING, /* cb will be called when completed */
-  GRPC_ENDPOINT_WRITE_ERROR    /* write errored out, cb won't be called */
-} grpc_endpoint_write_status;
+typedef enum grpc_endpoint_op_status {
+  GRPC_ENDPOINT_OP_DONE = 0,/* Call completed successfully */
+  GRPC_ENDPOINT_OP_PENDING, /* cb will be called when completed */
+  GRPC_ENDPOINT_OP_ERROR    /* Call interrupted by socket error */
+} grpc_endpoint_op_status;
 
 typedef void (*grpc_endpoint_read_cb)(void *user_data, gpr_slice *slices,
                                       size_t nslices,
-                                      grpc_endpoint_cb_status error);
+                                      grpc_endpoint_op_status status);
 typedef void (*grpc_endpoint_write_cb)(void *user_data,
-                                       grpc_endpoint_cb_status error);
+                                       grpc_endpoint_op_status status);
 
 struct grpc_endpoint_vtable {
-  void (*notify_on_read)(grpc_endpoint *ep, grpc_endpoint_read_cb cb,
-                         void *user_data);
-  grpc_endpoint_write_status (*write)(grpc_endpoint *ep, gpr_slice *slices,
-                                      size_t nslices, grpc_endpoint_write_cb cb,
-                                      void *user_data);
+  grpc_endpoint_op_status (*read)(grpc_endpoint *ep, grpc_endpoint_read_cb cb,
+                                  void *user_data);
+  grpc_endpoint_op_status (*write)(grpc_endpoint *ep, gpr_slice *slices,
+                                   size_t nslices, grpc_endpoint_write_cb cb,
+                                   void *user_data);
   void (*add_to_pollset)(grpc_endpoint *ep, grpc_pollset *pollset);
   void (*shutdown)(grpc_endpoint *ep);
   void (*destroy)(grpc_endpoint *ep);
 };
 
 /* When data is available on the connection, calls the callback with slices. */
-void grpc_endpoint_notify_on_read(grpc_endpoint *ep, grpc_endpoint_read_cb cb,
-                                  void *user_data);
+grpc_endpoint_op_status grpc_endpoint_read(grpc_endpoint *ep,
+                                           grpc_endpoint_read_cb cb,
+                                           void *user_data)
+                        GRPC_MUST_USE_RESULT;
 
 /* Write slices out to the socket.
 
@@ -84,11 +79,12 @@ void grpc_endpoint_notify_on_read(grpc_endpoint *ep, grpc_endpoint_read_cb cb,
    returns GRPC_ENDPOINT_WRITE_DONE.
    Otherwise it returns GRPC_ENDPOINT_WRITE_PENDING and calls cb when the
    connection is ready for more data. */
-grpc_endpoint_write_status grpc_endpoint_write(grpc_endpoint *ep,
-                                               gpr_slice *slices,
-                                               size_t nslices,
-                                               grpc_endpoint_write_cb cb,
-                                               void *user_data);
+grpc_endpoint_op_status grpc_endpoint_write(grpc_endpoint *ep,
+                                            gpr_slice *slices,
+                                            size_t nslices,
+                                            grpc_endpoint_write_cb cb,
+                                            void *user_data)
+                        GRPC_MUST_USE_RESULT;
 
 /* Causes any pending read/write callbacks to run immediately with
    GRPC_ENDPOINT_CB_SHUTDOWN status */

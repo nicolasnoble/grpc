@@ -57,7 +57,7 @@ static void thd_func(void *arg) {
   gpr_event_set(&a->done_thd, (void *)1);
 }
 
-static void done_write(void *arg, grpc_endpoint_cb_status status) {
+static void done_write(void *arg, grpc_endpoint_op_status status) {
   thd_args *a = arg;
   gpr_event_set(&a->done_write, (void *)1);
 }
@@ -113,12 +113,12 @@ void grpc_run_bad_client_test(const char *name, const char *client_payload,
 
   /* Write data */
   switch (grpc_endpoint_write(sfd.client, &slice, 1, done_write, &a)) {
-    case GRPC_ENDPOINT_WRITE_DONE:
+    case GRPC_ENDPOINT_OP_DONE:
       done_write(&a, 1);
       break;
-    case GRPC_ENDPOINT_WRITE_PENDING:
+    case GRPC_ENDPOINT_OP_PENDING:
       break;
-    case GRPC_ENDPOINT_WRITE_ERROR:
+    case GRPC_ENDPOINT_OP_ERROR:
       done_write(&a, 0);
       break;
   }
