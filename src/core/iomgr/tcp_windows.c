@@ -103,7 +103,7 @@ static void tcp_free(grpc_tcp *tcp) {
   gpr_free(tcp);
 }
 
-/*#define GRPC_TCP_REFCOUNT_DEBUG*/
+#define GRPC_TCP_REFCOUNT_DEBUG
 #ifdef GRPC_TCP_REFCOUNT_DEBUG
 #define TCP_UNREF(tcp, reason) tcp_unref((tcp), (reason), __FILE__, __LINE__)
 #define TCP_REF(tcp, reason) tcp_ref((tcp), (reason), __FILE__, __LINE__)
@@ -143,8 +143,9 @@ static int on_read(grpc_tcp *tcp, int success) {
   grpc_winsocket_callback_info *info = &socket->read_info;
   int do_abort = 0;
 
+  gpr_log(GPR_ERROR, "on_read: success = %i, tcp = %p, socket = %p, socket = %i", success, tcp, tcp->socket, tcp->socket->socket);
   if (success) {
-    if (socket->read_info.wsa_error != 0) {
+    if (socket->read_info.wsa_error != 0 && !tcp->shutting_down) {
       if (socket->read_info.wsa_error != WSAECONNRESET) {
         char *utf8_message = gpr_format_message(info->wsa_error);
         gpr_log(GPR_ERROR, "ReadFile overlapped error: %s", utf8_message);
@@ -153,7 +154,7 @@ static int on_read(grpc_tcp *tcp, int success) {
       success = 0;
       gpr_slice_unref(tcp->read_slice);
     } else {
-      if (info->bytes_transfered != 0) {
+      if (info->bytes_transfered != 0 && !tcp->shutting_down) {
         sub = gpr_slice_sub_no_ref(tcp->read_slice, 0, info->bytes_transfered);
         gpr_slice_buffer_add(tcp->read_slices, sub);
         success = 1;
@@ -202,6 +203,7 @@ static grpc_endpoint_op_status win_read(grpc_endpoint *ep,
   buffer.len = GPR_SLICE_LENGTH(tcp->read_slice);
   buffer.buf = (char *)GPR_SLICE_START_PTR(tcp->read_slice);
 
+  gpr_log(GPR_ERROR, "win_read (sync): tcp = %p, socket = %p, socket = %i", tcp, tcp->socket, tcp->socket->socket);
   /* First let's try a synchronous, non-blocking read. */
   status =
       WSARecv(tcp->socket->socket, &buffer, 1, &bytes_read, &flags, NULL, NULL);
@@ -217,6 +219,7 @@ static grpc_endpoint_op_status win_read(grpc_endpoint *ep,
 
   TCP_REF(tcp, "read");
 
+  gpr_log(GPR_ERROR, "win_read (async): tcp = %p, socket = %p, socket = %i", tcp, tcp->socket, tcp->socket->socket);
   /* Otherwise, let's retry, by queuing a read. */
   memset(&tcp->socket->read_info.overlapped, 0, sizeof(OVERLAPPED));
   status = WSARecv(tcp->socket->socket, &buffer, 1, &bytes_read, &flags,
@@ -369,6 +372,7 @@ static void win_shutdown(grpc_endpoint *ep) {
   gpr_mu_lock(&tcp->mu);
   /* At that point, what may happen is that we're already inside the IOCP
      callback. See the comments in on_read and on_write. */
+  gpr_log(GPR_ERROR, "win_shutdown: tcp = %p, socket = %p, socket = %i", tcp, tcp->socket, tcp->socket->socket);
   tcp->shutting_down = 1;
   grpc_winsocket_shutdown(tcp->socket);
   gpr_mu_unlock(&tcp->mu);
