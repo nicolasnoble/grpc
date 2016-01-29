@@ -60,17 +60,15 @@ static int set_non_block(SOCKET sock) {
   return status == 0;
 }
 
-static int set_dualstack(SOCKET sock) {
-  int status;
+static void set_dualstack(SOCKET sock) {
   unsigned long param = 0;
-  status = setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&param,
-                      sizeof(param));
-  return status == 0;
+  setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&param,
+             sizeof(param));
 }
 
 int grpc_tcp_prepare_socket(SOCKET sock) {
   if (!set_non_block(sock)) return 0;
-  if (!set_dualstack(sock)) return 0;
+  set_dualstack(sock);
   return 1;
 }
 

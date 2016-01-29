@@ -51,6 +51,7 @@ static void winsock_init(void) {
   WSADATA wsaData;
   int status = WSAStartup(MAKEWORD(2, 0), &wsaData);
   GPR_ASSERT(status == 0);
+  GPR_ASSERT(LOBYTE(wsaData.wVersion) == 2);
 }
 
 static void winsock_shutdown(void) {

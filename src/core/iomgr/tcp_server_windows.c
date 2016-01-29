@@ -411,7 +411,7 @@ static grpc_tcp_listener *add_socket_to_server(grpc_tcp_server *s, SOCKET sock,
 
   if (status != 0) {
     char *utf8_message = gpr_format_message(WSAGetLastError());
-    gpr_log(GPR_ERROR, "on_connect error: %s", utf8_message);
+    gpr_log(GPR_ERROR, "add_socket_to_server error: %s", utf8_message);
     gpr_free(utf8_message);
     closesocket(sock);
     return NULL;
@@ -446,8 +446,11 @@ static grpc_tcp_listener *add_socket_to_server(grpc_tcp_server *s, SOCKET sock,
 
 int grpc_tcp_server_add_port(grpc_tcp_server *s, const void *addr,
                              size_t addr_len) {
-  grpc_tcp_listener *sp;
+  grpc_tcp_listener *sp = NULL;
   SOCKET sock;
+  const void *addr_v4 = NULL;
+  size_t addr_len_v4 = 0;
+  int converted_from_v4 = 0;
   struct sockaddr_in6 addr6_v4mapped;
   struct sockaddr_in6 wildcard;
   struct sockaddr *allocated_addr = NULL;
@@ -479,6 +482,9 @@ int grpc_tcp_server_add_port(grpc_tcp_server *s, const void *addr,
   }
 
   if (grpc_sockaddr_to_v4mapped(addr, &addr6_v4mapped)) {
+    addr_v4 = addr;
+    addr_len_v4 = addr_len;
+    converted_from_v4 = 1;
     addr = (const struct sockaddr *)&addr6_v4mapped;
     addr_len = sizeof(addr6_v4mapped);
   }
@@ -497,12 +503,29 @@ int grpc_tcp_server_add_port(grpc_tcp_server *s, const void *addr,
     char *utf8_message = gpr_format_message(WSAGetLastError());
     gpr_log(GPR_ERROR, "unable to create socket: %s", utf8_message);
     gpr_free(utf8_message);
+  } else {
+    sp = add_socket_to_server(s, sock, addr, addr_len, port_index);
   }
 
-  sp = add_socket_to_server(s, sock, addr, addr_len, port_index);
+  /* We failed creating and/or binding in IPv6, after converting the address
+     to IPv6. That seems it was a bad idea, so let's fallback in IPv4. */
+  if (!sp && converted_from_v4) {
+    closesocket(sock);
+    sock = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0,
+                     WSA_FLAG_OVERLAPPED);
+    if (sock == INVALID_SOCKET) {
+      char *utf8_message = gpr_format_message(WSAGetLastError());
+      gpr_log(GPR_ERROR, "unable to create socket: %s", utf8_message);
+      gpr_free(utf8_message);
+    } else {
+      sp = add_socket_to_server(s, sock, addr_v4, addr_len_v4, port_index);
+    }
+  }
+
   gpr_free(allocated_addr);
 
   if (sp) {
+    closesocket(sock);
     return sp->port;
   } else {
     return -1;
