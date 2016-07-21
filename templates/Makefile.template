@@ -47,6 +47,12 @@
         return filename
       return '$(GENDIR)/' + m.group(1) + '.pb.cc $(GENDIR)/' + m.group(1) + '.grpc.pb.cc'
 
+    def proto_to_nanoc(filename):
+      m = proto_re.match(filename)
+      if not m:
+        return filename
+      return '$(GENDIR)/' + m.group(1) + '.pb.cc $(GENDIR)/' + m.group(1) + '.grpc.pb.cc'
+
     sources_that_need_openssl = set()
     sources_that_don_t_need_openssl = set()
 
@@ -1125,6 +1131,11 @@
   	$(E) "[GRPC]    Generating gRPC's protobuf service CC file from $<"
   	$(Q) mkdir -p `dirname $@`
   	$(Q) $(PROTOC) -Ithird_party/protobuf/src -I. --grpc_out=$(GENDIR) --plugin=protoc-gen-grpc=$(BINDIR)/$(CONFIG)/grpc_cpp_plugin $<
+
+  $(GENDIR)/${p}.grpc.pb.cc: ${p}.proto $(PROTOBUF_DEP) $(PROTOC_PLUGINS) ${' '.join('$(GENDIR)/%s.pb.cc $(GENDIR)/%s.grpc.pb.cc' % (q,q) for q in proto_deps.get(p, []))}
+  	$(E) "[GRPC]    Generating gRPC's protobuf service CC file from $<"
+  	$(Q) mkdir -p `dirname $@`
+  	$(Q) $(PROTOC) -Ithird_party/protobuf/src -I. --grpc_out=$(GENDIR) --plugin=protoc-gen-grpc=$(BINDIR)/$(CONFIG)/grpc_cpp_plugin $<
   endif
 
   % endfor
@@ -1324,10 +1335,17 @@
   <%def name="makelib(lib)">
   LIB${lib.name.upper()}_SRC = \\
 
+  % if lib.language == "c++":
   % for src in lib.src:
       ${proto_to_cc(src)} \\
 
   % endfor
+  % else:
+  % for src in lib.src:
+      ${proto_to_nanoc(src)} \\
+
+  % endfor
+  % endif
 
   % if "public_headers" in lib:
   % if lib.language == "c++":
