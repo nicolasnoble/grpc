@@ -108,9 +108,10 @@ static gpr_cv g_cv;
 static int g_threads = 0;
 
 static void run_closure(void *arg) {
-  grpc_closure *closure = arg;
+  grpc_closure *c = arg;
   grpc_exec_ctx exec_ctx = GRPC_EXEC_CTX_INIT;
-  closure->cb(&exec_ctx, closure->cb_arg, (closure->final_data & 1) != 0);
+  grpc_error *error = c->error;
+  c->cb(&exec_ctx, c->cb_arg, error);
   grpc_exec_ctx_finish(&exec_ctx);
   gpr_mu_lock(&g_mu);
   if (--g_threads == 0) {
@@ -131,15 +132,6 @@ bool grpc_exec_ctx_flush(grpc_exec_ctx *exec_ctx) { return false; }
 
 void grpc_exec_ctx_finish(grpc_exec_ctx *exec_ctx) {}
 
-void grpc_exec_ctx_enqueue(grpc_exec_ctx *exec_ctx, grpc_closure *closure,
-                           bool success,
-                           grpc_workqueue *offload_target_or_null) {
-  GPR_ASSERT(offload_target_or_null == NULL);
-  if (closure == NULL) return;
-  closure->final_data = success;
-  start_closure(closure);
-}
-
 void grpc_exec_ctx_enqueue_list(grpc_exec_ctx *exec_ctx,
                                 grpc_closure_list *list,
                                 grpc_workqueue *offload_target_or_null) {
@@ -148,7 +140,7 @@ void grpc_exec_ctx_enqueue_list(grpc_exec_ctx *exec_ctx,
   grpc_closure *p = list->head;
   while (p) {
     grpc_closure *start = p;
-    p = grpc_closure_next(start);
+    p = p->next_data.next;
     start_closure(start);
   }
   grpc_closure_list r = GRPC_CLOSURE_LIST_INIT;
