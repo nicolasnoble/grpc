@@ -73,6 +73,7 @@ END2END_FIXTURES = {
     'h2_ssl_proxy': default_secure_fixture_options._replace(includes_proxy=True,
                                                             ci_mac=False),
     'h2_uds': uds_fixture_options,
+    'h2_uds_abs': uds_fixture_options,
 }
 
 TestOptions = collections.namedtuple(

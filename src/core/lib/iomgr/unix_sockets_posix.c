@@ -58,6 +58,7 @@ grpc_error *grpc_resolve_unix_domain_address(const char *name,
   un->sun_family = AF_UNIX;
   strcpy(un->sun_path, name);
   (*addrs)->addrs->len = strlen(un->sun_path) + sizeof(un->sun_family) + 1;
+  if (un->sun_path[0] == '@') un->sun_path[0] = '\0';
   return GRPC_ERROR_NONE;
 }
 
@@ -72,6 +73,8 @@ void grpc_unlink_if_unix_domain_socket(const struct sockaddr *addr) {
   struct sockaddr_un *un = (struct sockaddr_un *)addr;
   struct stat st;
 
+  if (un->sun_path[0] == '\0') return;
+
   if (stat(un->sun_path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFSOCK) {
     unlink(un->sun_path);
   }
@@ -83,7 +86,13 @@ char *grpc_sockaddr_to_uri_unix_if_possible(const struct sockaddr *addr) {
   }
 
   char *result;
-  gpr_asprintf(&result, "unix:%s", ((struct sockaddr_un *)addr)->sun_path);
+  struct sockaddr_un *un = (struct sockaddr_un *)addr;
+
+  if (un->sun_path[0] == '\0') {
+    gpr_asprintf(&result, "unix:@%s", un->sun_path + 1);
+  } else {
+    gpr_asprintf(&result, "unix:%s", un->sun_path);
+  }
   return result;
 }
 
