@@ -304,6 +304,7 @@ if test "$PHP_GRPC" != "no"; then
     src/core/plugin_registry/grpc_plugin_registry.c \
     src/boringssl/err_data.c \
     third_party/boringssl/crypto/aes/aes.c \
+    third_party/boringssl/crypto/aes/key_wrap.c \
     third_party/boringssl/crypto/aes/mode_wrappers.c \
     third_party/boringssl/crypto/asn1/a_bitstr.c \
     third_party/boringssl/crypto/asn1/a_bool.c \
@@ -470,6 +471,7 @@ if test "$PHP_GRPC" != "no"; then
     third_party/boringssl/crypto/poly1305/poly1305.c \
     third_party/boringssl/crypto/poly1305/poly1305_arm.c \
     third_party/boringssl/crypto/poly1305/poly1305_vec.c \
+    third_party/boringssl/crypto/pool/pool.c \
     third_party/boringssl/crypto/rand/deterministic.c \
     third_party/boringssl/crypto/rand/rand.c \
     third_party/boringssl/crypto/rand/urandom.c \
@@ -596,6 +598,7 @@ if test "$PHP_GRPC" != "no"; then
     third_party/boringssl/ssl/ssl_file.c \
     third_party/boringssl/ssl/ssl_lib.c \
     third_party/boringssl/ssl/ssl_rsa.c \
+    third_party/boringssl/ssl/ssl_rsa_cc.cc \
     third_party/boringssl/ssl/ssl_session.c \
     third_party/boringssl/ssl/ssl_stat.c \
     third_party/boringssl/ssl/t1_enc.c \
@@ -692,6 +695,7 @@ if test "$PHP_GRPC" != "no"; then
   PHP_ADD_BUILD_DIR($ext_builddir/third_party/boringssl/crypto/pem)
   PHP_ADD_BUILD_DIR($ext_builddir/third_party/boringssl/crypto/pkcs8)
   PHP_ADD_BUILD_DIR($ext_builddir/third_party/boringssl/crypto/poly1305)
+  PHP_ADD_BUILD_DIR($ext_builddir/third_party/boringssl/crypto/pool)
   PHP_ADD_BUILD_DIR($ext_builddir/third_party/boringssl/crypto/rand)
   PHP_ADD_BUILD_DIR($ext_builddir/third_party/boringssl/crypto/rc4)
   PHP_ADD_BUILD_DIR($ext_builddir/third_party/boringssl/crypto/rsa)

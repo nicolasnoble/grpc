@@ -158,6 +158,7 @@
           'sources': [
             'src/boringssl/err_data.c',
             'third_party/boringssl/crypto/aes/aes.c',
+            'third_party/boringssl/crypto/aes/key_wrap.c',
             'third_party/boringssl/crypto/aes/mode_wrappers.c',
             'third_party/boringssl/crypto/asn1/a_bitstr.c',
             'third_party/boringssl/crypto/asn1/a_bool.c',
@@ -324,6 +325,7 @@
             'third_party/boringssl/crypto/poly1305/poly1305.c',
             'third_party/boringssl/crypto/poly1305/poly1305_arm.c',
             'third_party/boringssl/crypto/poly1305/poly1305_vec.c',
+            'third_party/boringssl/crypto/pool/pool.c',
             'third_party/boringssl/crypto/rand/deterministic.c',
             'third_party/boringssl/crypto/rand/rand.c',
             'third_party/boringssl/crypto/rand/urandom.c',
@@ -450,6 +452,7 @@
             'third_party/boringssl/ssl/ssl_file.c',
             'third_party/boringssl/ssl/ssl_lib.c',
             'third_party/boringssl/ssl/ssl_rsa.c',
+            'third_party/boringssl/ssl/ssl_rsa_cc.cc',
             'third_party/boringssl/ssl/ssl_session.c',
             'third_party/boringssl/ssl/ssl_stat.c',
             'third_party/boringssl/ssl/t1_enc.c',

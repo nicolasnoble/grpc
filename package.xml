@@ -601,6 +601,7 @@
     <file baseinstalldir="/" name="third_party/boringssl/crypto/digest/md32_common.h" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/crypto/ec/internal.h" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/crypto/ec/p256-x86_64-table.h" role="src" />
+    <file baseinstalldir="/" name="third_party/boringssl/crypto/ec/p256-x86_64.h" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/crypto/evp/internal.h" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/crypto/internal.h" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/crypto/modes/internal.h" role="src" />
@@ -609,6 +610,7 @@
     <file baseinstalldir="/" name="third_party/boringssl/crypto/obj/obj_xref.h" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/crypto/pkcs8/internal.h" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/crypto/poly1305/internal.h" role="src" />
+    <file baseinstalldir="/" name="third_party/boringssl/crypto/pool/internal.h" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/crypto/rand/internal.h" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/crypto/rsa/internal.h" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/crypto/x509/charmap.h" role="src" />
@@ -671,6 +673,7 @@
     <file baseinstalldir="/" name="third_party/boringssl/include/openssl/pkcs7.h" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/include/openssl/pkcs8.h" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/include/openssl/poly1305.h" role="src" />
+    <file baseinstalldir="/" name="third_party/boringssl/include/openssl/pool.h" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/include/openssl/rand.h" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/include/openssl/rc4.h" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/include/openssl/ripemd.h" role="src" />
@@ -692,6 +695,7 @@
     <file baseinstalldir="/" name="third_party/boringssl/ssl/internal.h" role="src" />
     <file baseinstalldir="/" name="src/boringssl/err_data.c" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/crypto/aes/aes.c" role="src" />
+    <file baseinstalldir="/" name="third_party/boringssl/crypto/aes/key_wrap.c" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/crypto/aes/mode_wrappers.c" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/crypto/asn1/a_bitstr.c" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/crypto/asn1/a_bool.c" role="src" />
@@ -858,6 +862,7 @@
     <file baseinstalldir="/" name="third_party/boringssl/crypto/poly1305/poly1305.c" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/crypto/poly1305/poly1305_arm.c" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/crypto/poly1305/poly1305_vec.c" role="src" />
+    <file baseinstalldir="/" name="third_party/boringssl/crypto/pool/pool.c" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/crypto/rand/deterministic.c" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/crypto/rand/rand.c" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/crypto/rand/urandom.c" role="src" />
@@ -984,6 +989,7 @@
     <file baseinstalldir="/" name="third_party/boringssl/ssl/ssl_file.c" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/ssl/ssl_lib.c" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/ssl/ssl_rsa.c" role="src" />
+    <file baseinstalldir="/" name="third_party/boringssl/ssl/ssl_rsa_cc.cc" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/ssl/ssl_session.c" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/ssl/ssl_stat.c" role="src" />
     <file baseinstalldir="/" name="third_party/boringssl/ssl/t1_enc.c" role="src" />

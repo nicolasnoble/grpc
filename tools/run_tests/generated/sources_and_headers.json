@@ -3728,6 +3728,20 @@
   {
     "deps": [
       "boringssl", 
+      "boringssl_p256-x86_64_test_lib", 
+      "boringssl_test_util"
+    ], 
+    "headers": [], 
+    "is_filegroup": false, 
+    "language": "c++", 
+    "name": "boringssl_p256-x86_64_test", 
+    "src": [], 
+    "third_party": true, 
+    "type": "target"
+  }, 
+  {
+    "deps": [
+      "boringssl", 
       "boringssl_ecdh_test_lib", 
       "boringssl_test_util"
     ], 
@@ -3987,6 +4001,20 @@
     "is_filegroup": false, 
     "language": "c++", 
     "name": "boringssl_poly1305_test", 
+    "src": [], 
+    "third_party": true, 
+    "type": "target"
+  }, 
+  {
+    "deps": [
+      "boringssl", 
+      "boringssl_pool_test_lib", 
+      "boringssl_test_util"
+    ], 
+    "headers": [], 
+    "is_filegroup": false, 
+    "language": "c++", 
+    "name": "boringssl_pool_test", 
     "src": [], 
     "third_party": true, 
     "type": "target"
@@ -5822,6 +5850,7 @@
       "third_party/boringssl/crypto/digest/md32_common.h", 
       "third_party/boringssl/crypto/ec/internal.h", 
       "third_party/boringssl/crypto/ec/p256-x86_64-table.h", 
+      "third_party/boringssl/crypto/ec/p256-x86_64.h", 
       "third_party/boringssl/crypto/evp/internal.h", 
       "third_party/boringssl/crypto/internal.h", 
       "third_party/boringssl/crypto/modes/internal.h", 
@@ -5830,6 +5859,7 @@
       "third_party/boringssl/crypto/obj/obj_xref.h", 
       "third_party/boringssl/crypto/pkcs8/internal.h", 
       "third_party/boringssl/crypto/poly1305/internal.h", 
+      "third_party/boringssl/crypto/pool/internal.h", 
       "third_party/boringssl/crypto/rand/internal.h", 
       "third_party/boringssl/crypto/rsa/internal.h", 
       "third_party/boringssl/crypto/x509/charmap.h", 
@@ -5892,6 +5922,7 @@
       "third_party/boringssl/include/openssl/pkcs7.h", 
       "third_party/boringssl/include/openssl/pkcs8.h", 
       "third_party/boringssl/include/openssl/poly1305.h", 
+      "third_party/boringssl/include/openssl/pool.h", 
       "third_party/boringssl/include/openssl/rand.h", 
       "third_party/boringssl/include/openssl/rc4.h", 
       "third_party/boringssl/include/openssl/ripemd.h", 
@@ -6186,6 +6217,19 @@
     "headers": [], 
     "is_filegroup": false, 
     "language": "c++", 
+    "name": "boringssl_p256-x86_64_test_lib", 
+    "src": [], 
+    "third_party": true, 
+    "type": "lib"
+  }, 
+  {
+    "deps": [
+      "boringssl", 
+      "boringssl_test_util"
+    ], 
+    "headers": [], 
+    "is_filegroup": false, 
+    "language": "c++", 
     "name": "boringssl_ecdh_test_lib", 
     "src": [], 
     "third_party": true, 
@@ -6421,6 +6465,19 @@
     "is_filegroup": false, 
     "language": "c++", 
     "name": "boringssl_poly1305_test_lib", 
+    "src": [], 
+    "third_party": true, 
+    "type": "lib"
+  }, 
+  {
+    "deps": [
+      "boringssl", 
+      "boringssl_test_util"
+    ], 
+    "headers": [], 
+    "is_filegroup": false, 
+    "language": "c++", 
+    "name": "boringssl_pool_test_lib", 
     "src": [], 
     "third_party": true, 
     "type": "lib"
