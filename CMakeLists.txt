@@ -227,6 +227,10 @@ endif()
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${_gRPC_C_CXX_FLAGS}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${_gRPC_C_CXX_FLAGS}")
 
+if (gRPC_USE_EVENT_ENGINE)
+  add_definitions(-DGRPC_USE_EVENT_ENGINE)
+endif()
+
 if(gRPC_USE_PROTO_LITE)
   set(_gRPC_PROTOBUF_LIBRARY_NAME "libprotobuf-lite")
   add_definitions("-DGRPC_USE_PROTO_LITE")
@@ -270,7 +274,7 @@ if(_gRPC_PLATFORM_MAC OR _gRPC_PLATFORM_IOS)
 elseif(_gRPC_PLATFORM_ANDROID)
   set(_gRPC_ALLTARGETS_LIBRARIES ${CMAKE_DL_LIBS} m)
 elseif(UNIX)
-  set(_gRPC_ALLTARGETS_LIBRARIES ${CMAKE_DL_LIBS} rt m pthread)
+  set(_gRPC_ALLTARGETS_LIBRARIES ${CMAKE_DL_LIBS} rt m pthread uv)
 endif()
 
 if(WIN32)
@@ -1860,6 +1864,7 @@ add_library(grpc
   src/core/lib/iomgr/event_engine/resolver.cc
   src/core/lib/iomgr/event_engine/tcp.cc
   src/core/lib/iomgr/event_engine/timer.cc
+  src/core/lib/iomgr/event_engine/uv/impl.cc
   src/core/lib/iomgr/exec_ctx.cc
   src/core/lib/iomgr/executor.cc
   src/core/lib/iomgr/executor/mpmcqueue.cc
